@@ -1,0 +1,215 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+---
+```{r}
+library(tidyverse)
+library(colorspace)
+```
+
+```{r}
+boolean_palette = c("TRUE"="#FF3366",
+                    "FALSE"="#6699FF",
+                    "1"="#FF3366",
+                    "0"="#6699FF")
+```
+
+
+```{r}
+df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변량분석/통통배/dataset/hotel_bookings.csv")
+head(df)
+```
+
+
+## 캔슬이 유독 많다. 
+```{r}
+df %>% ggplot(aes(x = is_canceled, fill = as.factor(is_canceled))) + 
+    geom_bar() + 
+    ggtitle("Cancellation Status") + 
+    scale_fill_manual(values = boolean_palette)
+
+df %>% summarize(canceled_percent = sum(is_canceled) / length(is_canceled)) 
+```
+## 재방문 / 첫방문에 따른 캔슬 빈도수 차이
+```{r}
+# 한 번도 방문하지 않은 고객이 캔슬한 횟수
+df %>%
+  mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+  filter(is_repeated_guest == F) %>%
+  filter(previous_cancellations != 0) %>% 
+  count(previous_cancellations, name = "freq") %>% 
+  summarise(weight_sum = sum(previous_cancellations * freq)) %>% as.numeric()
+
+#  방문 경험이 있는 사람이 캔슬한 횟수
+df %>%
+  mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+  filter(is_repeated_guest == T) %>%
+  filter(previous_cancellations != 0) %>% 
+  count(previous_cancellations, name = "freq") %>% 
+  summarise(weight_sum = sum(previous_cancellations * freq))  %>% as.numeric()
+
+```
+
+한 번도 방문하지 않았던 사람들이 이전에 취소한 횟수가 더 많았다.
+```{r}
+# 한 번도 방문하지 않은 고객이 과거에 캔슬한 횟수
+df %>% 
+    mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+    filter(is_repeated_guest == F) %>%
+    filter(previous_cancellations != 0) %>% 
+    select(previous_cancellations) %>%
+    table()
+
+#  방문 경험이 있는 사람이 과거에 캔슬한 횟수 
+df %>% 
+    mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+    filter(is_repeated_guest == T) %>%
+    filter(previous_cancellations != 0) %>% 
+    select(previous_cancellations) %>%
+    table()
+```
+```{r}
+# ggplot 객체를 미리 정의합니다.
+plot_list <- list()
+
+for (i in 0:1){
+  plot_list[[i + 1]] <- df %>% 
+    group_by(is_repeated_guest) %>% 
+    filter(previous_cancellations > i) %>% 
+    select(previous_cancellations) %>%
+    count(previous_cancellations, name = "freq") %>%
+    ungroup() %>%
+    ggplot(aes(x = as.factor(previous_cancellations), y = freq, fill = as.factor(is_repeated_guest))) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(x = "Previous Cancellations", y = "Frequency", fill = "Is Repeated Guest") +
+    scale_fill_manual(values = boolean_palette) + 
+    ggtitle(paste("Num of Cancellation (Previous Cancellations > ", i, ")")) + 
+    theme_minimal()
+}
+
+for (i in 1:length(plot_list)) {
+  print(plot_list[[i]])
+}
+```
+
+첫 방문 고객 중에 한 번 캔슬한 경우가 압도적으로 많았다. 시각화에 있어 1이 outlier의 역할을 하기에, 1을 제외한 그래프를 그렸다. 그 결과 고빈도 캔슬 수는 첫 방문인 경우가 많고, 저빈도 캔슬 수는 재방문인 경우가 많았다. 
+
+## 과거의 캔슬 여부가 현재 캔슬 여부와 관련 있을까?
+- 재방문 고객 기준 분석 
+```{r}
+# 재방문인 사람들만 뽑는다. 
+repeated_guest_df = df %>% 
+    mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+    filter(is_repeated_guest) 
+
+head(repeated_guest_df)
+```
+```{r}
+repeated_guest_df %>% 
+    mutate(has_canceled = (previous_cancellations > 0),
+           is_canceled = as.factor(is_canceled)) %>%
+    ggplot(aes(is_canceled, has_canceled)) + geom_bin2d(binwidth=1)
+```
+```{r}
+repeated_guest_df %>% 
+    mutate(has_canceled = (previous_cancellations != 0),
+           is_canceled = as.factor(is_canceled)) %>%
+    ggplot(aes(has_canceled, fill=has_canceled)) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    facet_wrap(~is_canceled) + 
+    ggtitle("Current Cancellation")
+```
+이렇게만 봐서는 제대로 보이지 않는다. 
+
+```{r}
+# 전체 데이터 중 과거 캔슬을 한 적 있는 사람의 비율 
+length(df$previous_cancellations[df$previous_cancellations != 0]) / length(df$previous_cancellations)
+```
+
+```{r}
+repeated_guest_df %>% 
+    mutate(has_canceled = (previous_cancellations != 0),
+           is_canceled = as.factor(is_canceled)) %>%
+    ggplot(aes(has_canceled, fill=is_canceled)) + 
+    geom_bar(position = "fill") + 
+    scale_fill_manual(values = boolean_palette) +
+    ggtitle("Canceled Before")
+```
+과거에 부킹을 취소한 경우가 전체 데이터에 비해 크지 않아, 전체 빈도로 계산했을 때는 과거 캔슬한 사람이 현재도 캔슬을 한 경우가 명확히 보이지 않는다. 이를 보완하기 위해 비율로 데이터를 표준화시켜 시각화했다. 그 결과 과거에 캔슬을 한 사람이 또 캔슬을 하는 비율이 50%였다. 
+
+## 예약과 방문의 시간차와 취소의 관계
+```{r}
+df %>% 
+    ggplot() + 
+    geom_density(aes(lead_time, color=as.factor(is_canceled))) + 
+    scale_color_manual(values = boolean_palette)
+```
+방문한 손님은 직전에 예약하는 경우가 많다. 
+대략 1달 전에 예약한 경우 취소하는 건수가 더 많다. 
+
+- 첫 번째 방문 손님
+```{r}
+df %>% 
+    mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+    filter(is_repeated_guest == F) %>%
+    ggplot(aes(as.factor(is_canceled), lead_time, color=as.factor(is_canceled))) +
+    geom_violin() +
+    geom_boxplot(width=.1) + 
+     scale_color_manual(values = boolean_palette) 
+```
+첫 손님인 경우 방문한 손님보다 취소한 손님이 더 방문과 예약 사이의 기간이 길다. 
+
+- 재방문 손님인 경우
+```{r}
+df %>% 
+    mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
+    filter(is_repeated_guest == T) %>%
+    ggplot(aes(as.factor(is_canceled), lead_time, color=as.factor(is_canceled))) +
+    geom_violin() +
+    scale_color_manual(values = boolean_palette) 
+```
+재방문의 경우도 첫방문과 마찬가지로 직전 예약이 가장 많다. 
+
+## 예약 변경과 취소 
+
+```{r}
+df %>% 
+    mutate(is_canceled = as.logical(is_canceled)) %>%
+    filter(booking_changes != 0) %>%
+    ggplot(aes(as.factor(booking_changes), fill=is_canceled)) + 
+    geom_bar( position = "dodge") + 
+    scale_fill_manual(values = boolean_palette)
+```
+대부분 5회 이내로 예약을 변경하며, 취소하지 않은 사람이 예약을 바꾼 경우가 더 많다. 
+
+## 예약한 방 - 받은 방
+```{r}
+df %>%
+  group_by(reserved_room_type) %>%
+  count(assigned_room_type) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup() %>%
+    ggplot(aes(x = reserved_room_type, y = assigned_room_type, fill = proportion)) +
+  geom_tile() +
+  scale_fill_continuous(name = "Proportion", labels = scales::percent, , low = "lightgrey", high = "purple") +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  theme_minimal()
+```
+I,K 타입은 예약한 케이스는 없는데 배정받은 경우만 있으며, A-H 방까지만 I,K 타입 방을 배정받는다. 
+대부분 자기가 예약한 방을 갖는다. 
+L 타입이 유독 예약한 것과 다른 방을 배정받는 경우가 많다. 
+
+## 예약한 방과 취소
+```{r}
+df %>%
+    mutate(is_canceled = as.logical(is_canceled)) %>%
+    group_by(reserved_room_type) %>%
+    count(is_canceled) %>%
+    mutate(proportion = n / sum(n)) %>%
+    ungroup() %>%
+    ggplot() + geom_bin_2d(aes(reserved_room_type, is_canceled, fill=proportion))
+```
+P 타입 방을 예약한 사람이 전부 예약을 취소했다. 

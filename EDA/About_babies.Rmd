@@ -1,0 +1,71 @@
+---
+title: "MV_teamprj1_EDA"
+author: "sumr"
+date: "2024-05-21"
+output: word_document
+---
+
+# data importing & analysis
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggmosaic)
+library(GGally)
+
+hotel = read.csv("./source/hotel_bookings.csv")
+head(hotel)
+dim(hotel)
+summary(hotel)
+str(hotel)
+```
+
+
+# 소주제 1 : baby의 수/children의 수와 연관된 변수 파악
+
+* meal type (식사타입)
+* total_of_special_requests (특별 요청 수)
+
+* 가설 1 : baby의 유무가 meal type에 영향을 미칠 것이다.
+* 가설 2 : baby의 유무가 total_of_special_requests(특별 요청 수)에 영향을 미칠 것이다.
+* 가설 3: baby의 유무가 meal type과 total_of_special_requests(특별 요청 수)에 영향을 미칠 것이다. (one-way manova)
+
+```{r}
+#babies
+summary(hotel$babies)
+sum(is.na(hotel$babies))
+sum(ifelse(hotel$babies != 0, 1, 0))
+table(hotel$babies)
+
+#baby 유무로 전처리
+hotel$hasbabies = ifelse(hotel$babies != "0", 1, 0)
+hotel$hasbabies = factor(hotel$hasbabies, levels = c(0, 1), labels = c("0", "1"))
+ggplot(hotel, aes(hasbabies)) + geom_bar()
+
+#meal type
+sum(is.na(hotel$meal))
+table(hotel$meal) #BB : breakfast&Bed / FB : full-board(breakfast, lunch & dinner) / HB : Half Board (Breakfast and Dinner normally) / SC : self-catering / undefined = sc로 통합하거나 삭제
+ggplot(hotel, aes(meal)) + geom_bar()
+
+
+#total_of_special_requests
+summary(hotel$total_of_special_requests)
+sum(is.na(hotel$total_of_special_requests))
+table(hotel$total_of_special_requests)
+ggplot(hotel, aes(total_of_special_requests)) + geom_bar()
+
+
+#hyp 1 : babies - meal type 
+ggplot(hotel, aes(x = hasbabies, colour = meal, fill = meal)) + geom_density(alpha = 0.1) + facet_wrap(~hasbabies)
+
+hotel %>% group_by(meal, hasbabies) %>% summarise(n=n()) %>% ggplot(aes(meal,n,fill=meal)) + geom_bar(stat = 'identity', position='dodge') + facet_wrap(~hasbabies, scales = "free_y")
+
+
+#hyp 2 : babies - total_of_special_requests
+ggplot(hotel, aes(x = factor(hasbabies), y = total_of_special_requests)) + geom_boxplot() + geom_violin(alpha = 0.3)
+
+#hyp 3 : babies - meal type & total_of_special_requests
+
+ggpairs(hotel[,c(13,30,33)])
+```
+
+

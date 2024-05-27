@@ -1,0 +1,95 @@
+---
+title: "Hotel_dataset"
+author: "2229022 Lee Seung Yeon"
+date: "2024-05-14"
+output: word_document
+---
+```{r}
+setwd("/Users/seungyeonlee/Desktop/Rworkspace/MV_teamproject")
+library(tidyverse)
+```
+
+```{r}
+data = read.csv("./hotel_bookings.csv")
+month_order <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+data$arrival_date_month <- factor(data$arrival_date_month, levels = month_order)
+head(data)
+```
+
+# adr 관찰
+```{r}
+summary(data$adr)
+```
+
+```{r}
+data %>% ggplot(aes(adr)) + geom_boxplot()
+# 너무 큰 값과 음수인 값 제외
+data %>% filter(adr < 1000 & adr > 0) %>% ggplot(aes(adr)) + geom_boxplot()
+```
+
+# 방 타입 변경 여부 시각화
+```{r}
+data %>% 
+  ggplot(aes(reserved_room_type, assigned_room_type)) + geom_bin2d() + facet_wrap("hotel")
+```
+
+# hotel - room type으로 나눠서 adr 관찰하기
+## room type 별로 adr에 차이가 있을 것이다.
+```{r}
+data %>% group_by(hotel, reserved_room_type) %>%
+  summarise(mean=mean(adr), median = median(adr))
+
+data %>% filter(adr < 1000 & adr > 0) %>% 
+  ggplot() + geom_boxplot(aes(adr, fill= reserved_room_type)) + 
+  facet_wrap("hotel")
+
+data %>% filter(adr < 1000 & adr > 0) %>% 
+  ggplot(aes(adr, color = assigned_room_type)) + geom_boxplot() + 
+  facet_wrap("hotel")
+```
+
+## hotel별로 월별 adr 관찰
+```{r}
+data %>% filter(adr < 1000 & adr > 0) %>%
+  filter(hotel == "City Hotel") %>%
+  ggplot(aes(adr, fill=arrival_date_month)) + geom_boxplot()
+
+data %>% filter(adr < 1000 & adr > 0) %>%
+  filter(hotel == "Resort Hotel") %>%
+  ggplot(aes(adr, fill=arrival_date_month)) + geom_boxplot()
+```
+
+## 월별 인기있는 room_type
+```{r}
+data %>% filter(adr < 1000 & adr > 0) %>%
+  group_by(hotel, arrival_date_month, reserved_room_type) %>%
+  summarise(n=n()) %>% filter(hotel=="Resort Hotel") %>%
+  ggplot(aes(n,arrival_date_month, fill=reserved_room_type)) + geom_bar(stat="identity")
+
+data %>% filter(adr < 1000 & adr > 0) %>%
+  group_by(hotel, arrival_date_month, reserved_room_type) %>%
+  summarise(n=n()) %>% filter(hotel=="City Hotel") %>%
+  ggplot(aes(n,arrival_date_month, fill=reserved_room_type)) + geom_bar(stat="identity")
+```
+
+
+## adr과 lead_time의 관계
+```{r}
+data %>% filter(adr < 400 & adr > 0, lead_time > 0) %>%
+  filter(hotel == "City Hotel") %>%
+  ggplot(aes(lead_time, adr)) + geom_point(alpha=0.2, size=0.2) + facet_wrap("reserved_room_type")
+
+data %>% filter(adr < 400 & adr > 0, lead_time > 0) %>%
+  filter(hotel == "Resort Hotel") %>%
+  ggplot(aes(lead_time, adr)) + geom_point(alpha=0.2, size=0.2) + facet_wrap("reserved_room_type")
+```
+
+
+## 포르투갈 현지 사람들의 adr과 그 외 국가에서 온 사람들의 adr 비교
+```{r}
+data %>% filter(country == "PRT", adr >0, adr<400) %>% ggplot(aes(adr)) + geom_boxplot() + coord_flip()
+data %>% filter(country != "PRT", adr >0, adr<400) %>% ggplot(aes(adr)) + geom_boxplot()+ coord_flip()
+```
+
+
+

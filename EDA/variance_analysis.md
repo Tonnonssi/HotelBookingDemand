@@ -17,8 +17,8 @@
 | babies                      | int             | 유아 인원 수                                                                                         | 0~10                            |
 | meal                        | chr(범주형)     | 식사 예약 종류                                                                                       | 5가지                           |
 | country                     | chr(범주형)     | 호텔 위치 국가                                                                                       | 178가지                         |
-| market_segment              | chr(범주형)     | 마켓 구분 (TA: Travel Agent, TO: Tour Operators)                                                     | 8가지                           |
-| distribution_channel        | chr(범주형)     | 예약 타입 (TA: Travel Agent, TO: Tour Operators)                                                     | 5가지                           |
+| market_segment              | chr(범주형)     | 마켓 구분_시장 세분화 (TA: Travel Agent, TO: Tour Operators)                                                     | 8가지                           |
+| distribution_channel        | chr(범주형)     | 유통관리 (TA: Travel Agent, TO: Tour Operators)                                                     | 5가지                           |
 | is_repeated_guest           | bool, int       | 재방문 여부                                                                                         | 0 / 1                           |
 | previous_cancellations      | int             | 이전에 예약을 취소한 횟수                                                                            | 0~26                            |
 | previous_bookings_not_canceled | int         | 이전에 예약 후 취소하지 않은 횟수                                                                     | 0~72                            |

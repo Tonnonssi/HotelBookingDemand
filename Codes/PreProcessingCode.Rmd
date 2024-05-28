@@ -1,0 +1,69 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+  pdf_document: default
+---
+# 전처리 
+```{r}
+library(tidyverse)
+```
+
+```{r}
+df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변량분석/통통배/dataset/hotel_bookings.csv")
+head(df)
+```
+```{r}
+dim(df)
+```
+
+## 중복 데이터 삭제 
+
+```{r}
+nrow(df[duplicated(df), ]) # 중복 열의 개수 
+```
+
+```{r}
+df = df %>% distinct() # 중복 데이터 삭제 
+dim(df)
+```
+
+## 어른이 없는 데이터 삭제 
+```{r}
+df = df %>% filter(adults != 0)
+dim(df)
+```
+
+## 결측치 처리 
+### NA case
+```{r}
+# 결측치 확인 
+df %>% filter(rowSums(is.na(df)) == 1)
+```
+
+```{r}
+df = df %>% filter(rowSums(is.na(df)) == 0)
+dim(df)
+```
+
+### NULL case
+```{r}
+df %>% filter(agent == "NULL") %>% dim() 
+# 그냥 날리기엔 NULL 값이 너무 많다. 
+# agent가 중요한 정보가 아니라서 agent를 날려버리는 쪽으로 선택
+```
+
+## 한 방에 처리하는 코드(팀원 배포용)
+```{r}
+df = df %>% 
+        filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+        distinct() %>% # 중복 데이터 삭제 
+        filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+        select(-agent,-company) %>% # 사용하지 않을 agent, company 삭제
+        mutate(reservation_status_date = as.Date(reservation_status_date)) # reservation_status_date dtype 변환
+
+head(df)
+dim(df)
+```
+

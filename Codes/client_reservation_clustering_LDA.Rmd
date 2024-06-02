@@ -1,0 +1,610 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(fastcluster)
+library(MASS)
+library(caret)
+```
+
+```{r}
+split_data <- function(data, train_ratio = 0.7, seed = NULL) {
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
+  
+  # 인덱스를 사용하여 데이터를 나눕니다
+  train_index <- createDataPartition(data[[1]], p = train_ratio, list = FALSE)
+  
+  train_set <- data[train_index, ]
+  test_set <- data[-train_index, ]
+  
+  return(list(train = train_set, test = test_set))
+}
+```
+
+```{r}
+boolean_palette = c("TRUE"="#FF3366",
+                    "FALSE"="#6699FF",
+                    "1"="#FF3366",
+                    "0"="#6699FF")
+```
+
+```{r}
+df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변량분석/통통배/dataset/hotel_bookings.csv")
+head(df)
+```
+
+## 전처리 
+```{r}
+total_df = df %>% 
+            filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+                distinct() %>% # 중복 데이터 삭제 
+                filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+                mutate(reservation_status_date = as.Date(reservation_status_date),
+                       is_prt = (country == "PRT"),
+                       headcount = (adults+children+babies),
+                       total_stays_night = stays_in_weekend_nights + stays_in_week_nights,
+                       childrens = children+babies) %>%
+                mutate(have_baby = (childrens != 0)) %>% 
+                dplyr::select(-country,-agent,-company, -childrens, -children, -babies) %>% 
+                filter(adults <= 10) %>% 
+                filter(total_stays_night != 0) 
+```
+
+## to dummy variable 
+```{r}
+total_df = convert_to_numeric(total_df, 
+                              "customer_type", 
+                              list("Contract" = 1, "Group" = 2, "Transient" = 3, "Transient-Party" = 4))
+
+total_df = convert_to_numeric(total_df, 
+                              "reservation_status", 
+                              list("Canceled" = 1, "Check-Out" = 2, "No-Show" = 3))
+
+total_df = convert_to_numeric(total_df, 
+                              "deposit_type", 
+                              list("No Deposit" = 1, "Non Refund" = 2, "Refundable" = 3))
+
+total_df = convert_to_numeric(total_df, 
+                              "arrival_date_month", 
+                              list(
+                                  "January" = 1, "February" = 2, "March" = 3, "April" = 4,
+                                  "May" = 5, "June" = 6, "July" = 7, "August" = 8,
+                                  "September" = 9, "October" = 10, "November" = 11, "December" = 12
+                                ))
+
+total_df = convert_to_numeric(total_df, 
+                              "meal", 
+                              list("BB" = 1, "FB" = 2, "HB" = 3, "SC" = 4, "Undefined" = 5))
+
+total_df = convert_to_numeric(total_df, 
+                              "market_segment", 
+                              list("Aviation" = 1, "Complementary" = 2, "Corporate" = 3, 
+                                   "Direct" = 4, "Groups" = 5, "Offline TA/TO" = 6, "Online TA" = 7))
+
+total_df = convert_to_numeric(total_df, 
+                              "distribution_channel", 
+                              list("Corporate" = 1, "Direct" = 2, "GDS" = 3, "TA/TO" = 4, "Undefined" = 5))
+
+total_df = convert_to_numeric(total_df, 
+                              "reserved_room_type", 
+                              list("A" = 1, "B" = 2, "C" = 3, "D" = 4, "E" = 5, "F" = 6, "G" = 7, "H" = 8, "L" = 11))
+
+total_df = convert_to_numeric(total_df, 
+                              "assigned_room_type", 
+                              list("A" = 1, "B" = 2, "C" = 3, "D" = 4, "E" = 5, "F" = 6, "G" = 7, "H" = 8, "I" = 9, "K" = 10, "L" = 11))
+```
+
+```{r}
+total_df %>% is.na() %>% sum()
+```
+
+## split df per resort city 
+```{r}
+resort_df = total_df %>% filter(hotel == "Resort Hotel")
+city_df = total_df %>% filter(hotel == "City Hotel")
+```
+
+```{r}
+resort_client = resort_df %>% dplyr::select(have_baby, customer_type, is_prt, headcount)
+
+resort_reservation_pattern = resort_df %>% dplyr::select(is_canceled, lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, required_car_parking_spaces, total_of_special_requests, reservation_status) # reservation_status_date
+```
+
+```{r}
+city_client = city_df %>% dplyr::select(have_baby, customer_type, is_prt, headcount)
+
+city_reservation_pattern = city_df %>% dplyr::select(is_canceled, lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, required_car_parking_spaces, total_of_special_requests, reservation_status) # reservation_status_date
+```
+# Resort
+```{r}
+km1 = kmeans(resort_client, centers = 5)
+km1$cluster %>% table()
+```
+```{r}
+resort_client$group = km1$cluster
+resort_client
+```
+## 시각화 
+```{r}
+resort_client %>%
+  ggplot(aes(x = as.factor(is_prt), fill = as.factor(is_prt))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "is_prt", fill = "is_prt") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+resort_client %>%
+  ggplot(aes(x = as.factor(have_baby), fill = as.factor(have_baby))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "have_baby ", fill = "have_baby") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+resort_client %>%
+  ggplot(aes(x = as.factor(customer_type), fill = as.factor(customer_type))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "customer_type", fill = "customer_type") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+```{r}
+resort_client %>%
+    filter(customer_type != 3) %>%
+  ggplot(aes(x = as.factor(customer_type), fill = as.factor(customer_type))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "customer_type ", fill = "customer_type") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+```{r}
+resort_client %>%
+  ggplot(aes(x = as.factor(headcount), fill = as.factor(headcount))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "headcount", fill = "headcount") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+
+```{r}
+resort_reservation_pattern$group = km1$cluster
+resort_reservation_pattern
+```
+```{r}
+resort_reservation_pattern %>%
+  ggplot(aes(x = as.factor(is_canceled), fill = factor(is_canceled))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "is_canceled", fill = "is_canceled") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+resort_reservation_pattern %>%
+  group_by(group, is_canceled) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_canceled))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "Is Canceled") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+
+
+```{r}
+resort_reservation_pattern %>%
+  group_by(group, is_repeated_guest) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_repeated_guest))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "is_repeated_guest") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+```{r}
+resort_reservation_pattern %>%
+    ggplot(aes(x = as.factor(is_repeated_guest), fill = factor(is_repeated_guest))) + 
+    geom_bar() +
+    facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+    labs(x = "is_repeated_guest", fill = "is_repeated_guest") + # 레이블 설정
+    scale_fill_manual(values = boolean_palette) +
+    theme_minimal() # 테마 설정
+```
+```{r}
+resort_reservation_pattern %>%
+    filter(is_repeated_guest == 1) %>% 
+    ggplot() + geom_bar(aes(group, fill=factor(group)))
+```
+```{r}
+resort_reservation_pattern %>%
+  filter(is_repeated_guest == 1) %>%
+  group_by(group, is_canceled) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_canceled))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "Is Canceled") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+- lead time
+```{r}
+resort_reservation_pattern %>%
+    ggplot(aes(lead_time)) + 
+    geom_freqpoly(aes(color=factor(group))) + 
+    geom_vline(xintercept=1, color='red')
+```
+
+```{r}
+resort_reservation_pattern %>%
+    ggplot(aes(group, lead_time)) + 
+    geom_jitter(aes(color=factor(group))) + 
+    geom_boxplot(aes(fill=factor(group))) + 
+    geom_hline(yintercept=1, color='red')
+
+```
+previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, required_car_parking_spaces, total_of_special_requests, reservation_status
+
+```{r}
+resort_reservation_pattern %>%
+    filter(adr < 4000) %>%
+    ggplot(aes(group, adr)) + 
+    geom_jitter(aes(color=factor(group))) + 
+    geom_boxplot(aes(fill=factor(group)))
+```
+```{r}
+ resort_reservation_pattern %>%
+  ggplot(aes(x = booking_changes, fill = factor(group))) + 
+  geom_bar(position = 'dodge') + 
+  xlim(-1, 5) +
+  labs(x = "Booking Changes", fill = "Group") +
+  theme_minimal()
+```
+
+```{r}
+ resort_reservation_pattern %>%
+  ggplot(aes(x = reservation_status, fill = factor(group))) + 
+  geom_bar(position = 'dodge') + 
+  labs(x = "reservation_status", fill = "Group") +
+  theme_minimal()
+```
+
+
+```{r}
+    
+resort_client %>% 
+    filter(group == 1) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 2) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 3) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 4) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 5) %>%
+    summary()
+```
+
+```{r}
+
+```
+
+
+
+
+
+```{r}
+hc = city_client[-4] %>% hclust.vector(method="median", metric='euclidean')
+cutree(hc, 5) %>% table()
+
+```
+
+근데 이거 호텔 데이터셋이잖아
+하룻밤도 안 잣는데
+캔슬도 아닌 애들은 뭐지
+방금 확인햇는데 500개 정돈데 모르겟어...
+
+웃긴거 알려줄까
+니꺼가 내꺼보다 나아
+## LDA
+### split data
+```{r}
+split_1 = split_data(resort_client, train_ratio = 0.8)
+
+train_dataset = split_1$train
+test_dataset = split_1$test
+```
+
+```{r}
+ld.result = lda(group~.,data=train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$group == pred)
+```
+
+```{r}
+make_coef_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```
+
+
+# Km
+```{r}
+km = kmeans(city_client, centers = 5)
+km$cluster %>% table()
+```
+```{r}
+city_client$group = km$cluster
+city_client
+```
+## 시각화 
+```{r}
+city_client %>%
+  ggplot(aes(x = as.factor(is_prt), fill = as.factor(is_prt))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "is_prt", fill = "is_prt") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+city_client %>%
+  ggplot(aes(x = as.factor(have_baby), fill = as.factor(have_baby))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "have_baby ", fill = "have_baby") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+city_client %>%
+  ggplot(aes(x = as.factor(customer_type), fill = as.factor(customer_type))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "customer_type", fill = "customer_type") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+```{r}
+city_client %>%
+    filter(customer_type != 3) %>%
+  ggplot(aes(x = as.factor(customer_type), fill = as.factor(customer_type))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "customer_type ", fill = "customer_type") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+```{r}
+city_client %>%
+  ggplot(aes(x = as.factor(headcount), fill = as.factor(headcount))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "headcount", fill = "headcount") + # 레이블 설정
+  theme_minimal() # 테마 설정
+```
+
+```{r}
+city_reservation_pattern$group = km$cluster
+city_reservation_pattern
+```
+```{r}
+city_reservation_pattern %>%
+  ggplot(aes(x = as.factor(is_canceled), fill = factor(is_canceled))) + 
+  geom_bar() +
+  facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+  labs(x = "is_canceled", fill = "is_canceled") + # 레이블 설정
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal() # 테마 설정
+```
+```{r}
+city_reservation_pattern %>%
+  group_by(group, is_canceled) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_canceled))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "Is Canceled") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+
+
+```{r}
+city_reservation_pattern %>%
+  group_by(group, is_repeated_guest) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_repeated_guest))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "is_repeated_guest") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+```{r}
+city_reservation_pattern %>%
+    ggplot(aes(x = as.factor(is_repeated_guest), fill = factor(is_repeated_guest))) + 
+    geom_bar() +
+    facet_wrap(~ group) + # 그룹별로 그래프를 나눔
+    labs(x = "is_repeated_guest", fill = "is_repeated_guest") + # 레이블 설정
+    scale_fill_manual(values = boolean_palette) +
+    theme_minimal() # 테마 설정
+```
+```{r}
+city_reservation_pattern %>%
+    filter(is_repeated_guest == 1) %>% 
+    ggplot() + geom_bar(aes(group, fill=factor(group)))
+```
+```{r}
+city_reservation_pattern %>%
+  filter(is_repeated_guest == 0) %>%
+  group_by(group, is_canceled) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(group) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ggplot(aes(x = factor(group), y = percentage, fill = factor(is_canceled))) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) + # 퍼센트 포맷 적용
+  labs(x = "Group", y = "Percentage", fill = "Is Canceled") +
+  scale_fill_manual(values = boolean_palette) +
+  theme_minimal()
+```
+- lead time
+```{r}
+city_reservation_pattern %>%
+    ggplot(aes(lead_time)) + 
+    geom_freqpoly(aes(color=factor(group))) + 
+    geom_vline(xintercept=1, color='red')
+```
+
+```{r}
+city_reservation_pattern %>%
+    ggplot(aes(group, lead_time)) + 
+    geom_jitter(aes(color=factor(group))) + 
+    geom_boxplot(aes(fill=factor(group))) + 
+    geom_hline(yintercept=1, color='red')
+
+```
+previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, required_car_parking_spaces, total_of_special_requests, reservation_status
+
+```{r}
+city_reservation_pattern %>%
+    filter(adr < 4000) %>%
+    ggplot(aes(group, adr)) + 
+    geom_jitter(aes(color=factor(group))) + 
+    geom_boxplot(aes(fill=factor(group)))
+
+city_reservation_pattern %>%
+    ggplot(aes(group, reservation_status)) + 
+    geom_jitter(aes(color=factor(group))) + 
+    geom_boxplot(aes(fill=factor(group))) 
+```
+```{r}
+ city_reservation_pattern %>%
+  ggplot(aes(x = booking_changes, fill = factor(group))) + 
+  geom_bar(position = 'dodge') + 
+  xlim(-1, 5) +
+  labs(x = "Booking Changes", fill = "Group") +
+  theme_minimal()
+```
+
+```{r}
+ city_reservation_pattern %>%
+  ggplot(aes(x = reservation_status, fill = factor(group))) + 
+  geom_bar(position = 'dodge') + 
+  labs(x = "reservation_status", fill = "Group") +
+  theme_minimal()
+```
+
+
+```{r}
+    
+city_client %>% 
+    filter(group == 1) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 2) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 3) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 4) %>%
+    summary()
+
+cat("\n")
+
+city_client %>% 
+    filter(group == 5) %>%
+    summary()
+```
+
+```{r}
+
+```
+
+
+
+
+
+```{r}
+hc = city_client[-4] %>% hclust.vector(method="median", metric='euclidean')
+cutree(hc, 5) %>% table()
+
+```
+
+근데 이거 호텔 데이터셋이잖아
+하룻밤도 안 잣는데
+캔슬도 아닌 애들은 뭐지
+방금 확인햇는데 500개 정돈데 모르겟어...
+
+웃긴거 알려줄까
+니꺼가 내꺼보다 나아
+## LDA
+### split data
+```{r}
+split = split_data(city_client, train_ratio = 0.8)
+
+train_dataset = split$train
+test_dataset = split$test
+```
+
+```{r}
+ld.result = lda(group~.,data=train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$group == pred)
+```
+
+```{r}
+make_coef_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```
+

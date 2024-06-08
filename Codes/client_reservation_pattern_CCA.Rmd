@@ -201,8 +201,8 @@ normalized_resort_reservation_pattern = data.frame(apply(resort_reservation_patt
 
 ### CCA
 ```{r}
-x = normalized_resort_client 
-y = normalized_resort_reservation_pattern  %>% dplyr::select(-days_in_waiting_list)
+x = normalized_resort_client
+y = normalized_resort_reservation_pattern %>% dplyr::select(-days_in_waiting_list)
 
 cc1 = cc(x, y)
 ```
@@ -236,7 +236,7 @@ normalized_city_reservation_pattern = data.frame(apply(city_reservation_pattern,
 
 ### CCA
 ```{r}
-x = normalized_city_client
+x = normalized_city_client 
 y = normalized_city_reservation_pattern  %>% dplyr::select(-days_in_waiting_list)
 
 cc2 = cc(x, y)
@@ -256,15 +256,15 @@ make_corr_heatmap(cc2$scores$corr.Y.yscores)
 ```
 
 ```{r}
-U1 = cc2$scores$xscores[,1]
-V1 = cc2$scores$yscores[,1]
+U1 = cc1$scores$xscores[,1]
+V1 = cc1$scores$yscores[,1]
 
 ddf = data.frame(U1,V1) %>% filter(V1 > -10)
 ggplot(ddf, aes(U1,V1)) + geom_point()
 ```
 
 ```{r}
-plt.cc(cc2, type="v", var.label = T)
+plt.cc(cc1, type="b", var.label = T)
 ```
 ```{r}
 mtc = matcor(normalized_city_client[-1], normalized_city_reservation_pattern)

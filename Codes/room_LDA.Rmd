@@ -1,0 +1,353 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(fastcluster)
+library(MASS)
+library(caret)
+library(imbalance)
+library(smotefamily)
+```
+
+## Load DataFrame
+```{r}
+df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변량분석/통통배/dataset/hotel_bookings.csv")
+head(df)
+```
+
+### 전처리 
+```{r}
+total_df = df %>% 
+            filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+                distinct() %>% # 중복 데이터 삭제 
+                filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+                mutate(reservation_status_date = as.Date(reservation_status_date),
+                       is_prt = (country == "PRT"),
+                       headcount = (adults+children+babies),
+                       total_stays_night = stays_in_weekend_nights + stays_in_week_nights,
+                       childrens = children+babies) %>%
+                mutate(have_baby = (childrens != 0)) %>% 
+                dplyr::select(-country,-agent,-company, -childrens, -children, -babies) %>% 
+                filter(adults <= 10) %>% 
+                filter(total_stays_night != 0) %>%
+                filter(adr >= 0) %>%
+                filter(adr < 4000)
+```
+
+```{r}
+total_df = convert_to_numeric(total_df, 
+                              "customer_type", 
+                              list("Contract" = 1, "Group" = 2, "Transient" = 3, "Transient-Party" = 4))
+
+total_df = convert_to_numeric(total_df, 
+                              "reservation_status", 
+                              list("Canceled" = 1, "Check-Out" = 2, "No-Show" = 3))
+
+total_df = convert_to_numeric(total_df, 
+                              "deposit_type", 
+                              list("No Deposit" = 1, "Non Refund" = 2, "Refundable" = 3))
+
+total_df = convert_to_numeric(total_df, 
+                              "arrival_date_month", 
+                              list(
+                                  "January" = 1, "February" = 2, "March" = 3, "April" = 4,
+                                  "May" = 5, "June" = 6, "July" = 7, "August" = 8,
+                                  "September" = 9, "October" = 10, "November" = 11, "December" = 12
+                                ))
+
+total_df = convert_to_numeric(total_df, 
+                              "meal", 
+                              list("BB" = 1, "FB" = 2, "HB" = 3, "SC" = 4, "Undefined" = 5))
+
+total_df = convert_to_numeric(total_df, 
+                              "market_segment", 
+                              list("Aviation" = 1, "Complementary" = 2, "Corporate" = 3, 
+                                   "Direct" = 4, "Groups" = 5, "Offline TA/TO" = 6, "Online TA" = 7))
+
+total_df = convert_to_numeric(total_df, 
+                              "distribution_channel", 
+                              list("Corporate" = 1, "Direct" = 2, "GDS" = 3, "TA/TO" = 4, "Undefined" = 5))
+```
+
+## City
+```{r}
+total_df %>%
+    filter(hotel == "City Hotel") %>% 
+    dplyr::select(reserved_room_type) %>% 
+    table()
+```
+```{r}
+oversampled_resort_df %>% 
+    dplyr::select(reserved_room_type) %>%
+    table()
+
+train_dataset %>% 
+    dplyr::select(reserved_room_type) %>%
+    table()
+
+test_dataset %>% 
+    dplyr::select(reserved_room_type) %>%
+    table()
+```
+
+```{r}
+ratio = 0.1
+oversampled_city_df = total_df %>%
+                    filter(hotel == "City Hotel") %>% 
+                    dplyr::select(reserved_room_type, adr, have_baby, is_prt, headcount, 
+                                  stays_in_weekend_nights, total_stays_night, lead_time, arrival_date_month) %>%
+    filter(reserved_room_type != "C") %>% 
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE")
+
+(oversampled_city_df) %>% 
+    dplyr::select(reserved_room_type) %>% 
+    table()
+```
+
+### 데이터 셋 나누기
+```{r}
+split = split_data(oversampled_city_df, train_ratio = 0.8)
+
+train_dataset = split$train
+test_dataset = split$test
+```
+
+### LDA
+```{r}
+ld.result = lda(reserved_room_type~. , data = train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, train_dataset)$class
+mean(train_dataset$reserved_room_type == pred)
+mean(train_dataset$reserved_room_type != pred)
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$reserved_room_type == pred)
+mean(test_dataset$reserved_room_type != pred)
+```
+
+
+```{r}
+make_pred_heatmap(pred = pred, test_dataset$reserved_room_type)
+```
+
+```{r}
+make_mean_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```
+### 
+```{r}
+valid <- data.frame(
+  adr = 150,
+  have_baby = FALSE,
+  is_prt = FALSE,
+  headcount = 1,
+  stays_in_weekend_nights = 1,
+  total_stays_night = 1,
+  lead_time = 49,
+  arrival_date_month = 7
+)
+predict(ld.result, valid)
+```
+
+### 정규화
+```{r}
+normalized_city_df = data.frame(apply(oversampled_city_df[,-1], MARGIN=2, FUN=normalize))
+normalized_city_df$reserved_room_type = oversampled_city_df$reserved_room_type
+
+split = split_data(normalized_city_df, train_ratio = 0.8)
+
+train_dataset = split$train
+test_dataset = split$test
+```
+
+### LDA
+```{r}
+ld.result = lda(reserved_room_type~. , data = train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, train_dataset)$class
+mean(train_dataset$reserved_room_type == pred)
+mean(train_dataset$reserved_room_type != pred)
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$reserved_room_type == pred)
+mean(test_dataset$reserved_room_type != pred)
+```
+
+
+```{r}
+make_pred_heatmap(pred = pred, test_dataset$reserved_room_type)
+```
+
+```{r}
+make_mean_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```
+
+## Resort
+```{r}
+total_df %>%
+    filter(hotel == "Resort Hotel") %>% 
+    dplyr::select(reserved_room_type) %>% 
+    table()
+```
+
+
+```{r}
+ratio = 0.05
+oversampled_resort_df = total_df %>%
+                    filter(hotel == "Resort Hotel") %>% 
+                    dplyr::select(reserved_room_type, adr, have_baby, is_prt, headcount, 
+                                  stays_in_weekend_nights, total_stays_night, lead_time, arrival_date_month) %>%
+    filter(reserved_room_type != "B") %>% 
+    filter(reserved_room_type != "L") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE") %>%
+    oversample(classAttr = "reserved_room_type", ratio=ratio, method = "SMOTE")
+
+(oversampled_resort_df) %>% 
+    dplyr::select(reserved_room_type) %>% 
+    table()
+```
+
+### 데이터 셋 나누기
+```{r}
+split = split_data(oversampled_resort_df, train_ratio = 0.8)
+
+train_dataset = split$train
+test_dataset = split$test
+```
+
+### LDA
+```{r}
+ld.result = lda(reserved_room_type~. , data = train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, train_dataset)$class
+mean(train_dataset$reserved_room_type == pred)
+mean(train_dataset$reserved_room_type != pred)
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$reserved_room_type == pred)
+mean(test_dataset$reserved_room_type != pred)
+```
+
+
+```{r}
+make_pred_heatmap <- function(pred, actual){
+  # 실제 값과 예측 값을 결합한 데이터 프레임 생성
+  comparison_df <- data.frame(Predicted = pred, Actual = actual)
+  
+  # 교차표 생성
+  confusion_matrix <- table(comparison_df$Actual, comparison_df$Predicted)
+  
+  # 교차표를 데이터 프레임으로 변환
+  confusion_df <- as.data.frame(confusion_matrix)
+  colnames(confusion_df) <- c("Actual", "Predicted", "Freq")
+  
+  # 각 예측 클래스에 대한 합계 계산
+  pred_sum <- colSums(confusion_matrix)
+  
+  # 각 셀의 값을 해당 열의 합계로 나누어 퍼센트 계산
+  for (i in 1:nrow(confusion_df)) {
+    confusion_df[i, "Percent"] <- confusion_df[i, "Freq"] / pred_sum[confusion_df[i, "Predicted"]] * 100
+  }
+  
+  # 히트맵 생성
+  ggplot(confusion_df, aes(x = Actual, y = Predicted, fill = Percent)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Freq, "\n", sprintf("%.1f%%", Percent))), vjust = 0.4) +
+    scale_fill_gradient(low = "white", high = "purple") +
+    labs(x = "Actual Group", y = "Predicted Group", title = "Confusion Matrix Heatmap") +
+    theme_minimal()
+}
+# 예제로 함수 호출
+
+make_pred_heatmap(pred = pred, test_dataset$reserved_room_type)
+```
+```{r}
+make_pred_heatmap <- function(pred, actual){
+
+  # 실제 값과 예측 값을 결합한 데이터 프레임 생성
+  comparison_df <- data.frame(Predicted = pred, Actual = actual)
+  
+  # 교차표 생성
+  confusion_matrix <- table(comparison_df$Actual, comparison_df$Predicted)
+  
+  # 교차표를 데이터 프레임으로 변환
+  confusion_df <- as.data.frame(confusion_matrix)
+  colnames(confusion_df) <- c("Actual", "Predicted", "Freq")
+  # 각 실제 값에 대한 퍼센트 계산
+  confusion_df <- confusion_df %>%
+    group_by(Actual) %>%
+    mutate(Percent = Freq / sum(Freq) * 100)
+  
+  # 히트맵 생성
+  ggplot(confusion_df, aes(x = Actual, y = Predicted, fill = Percent)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Freq, "\n", sprintf("%.1f%%", Percent))), vjust = 0.4) +
+    scale_fill_gradient(low = "white", high = "purple") +
+    labs(x = "Actual Group", y = "Predicted Group", title = "Confusion Matrix Heatmap") +
+    theme_minimal()
+}
+
+make_pred_heatmap(pred = pred, test_dataset$reserved_room_type)
+```
+```{r}
+make_mean_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```
+### 정규화
+```{r}
+normalized_resort_df = data.frame(apply(oversampled_resort_df[,-1], MARGIN=2, FUN=normalize))
+normalized_resort_df$reserved_room_type = oversampled_resort_df$reserved_room_type
+
+split = split_data(normalized_resort_df, train_ratio = 0.8)
+
+train_dataset = split$train
+test_dataset = split$test
+```
+
+### LDA
+```{r}
+ld.result = lda(reserved_room_type~. , data = train_dataset)
+ld.result
+```
+```{r}
+pred = predict(ld.result, train_dataset)$class
+mean(train_dataset$reserved_room_type == pred)
+mean(train_dataset$reserved_room_type != pred)
+```
+```{r}
+pred = predict(ld.result, test_dataset)$class
+mean(test_dataset$reserved_room_type == pred)
+mean(test_dataset$reserved_room_type != pred)
+```
+
+
+```{r}
+make_pred_heatmap(pred = pred, test_dataset$reserved_room_type)
+```
+
+```{r}
+make_mean_heatmap(ld.result$means)
+make_coef_heatmap(ld.result$scaling)
+```

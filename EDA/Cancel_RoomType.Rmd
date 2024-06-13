@@ -22,6 +22,24 @@ df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변�
 head(df)
 ```
 
+```{r}
+df = df %>% 
+            filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+                distinct() %>% # 중복 데이터 삭제 
+                filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+                mutate(reservation_status_date = as.Date(reservation_status_date),
+                       is_prt = (country == "PRT"),
+                       headcount = (adults+children+babies),
+                       total_stays_night = stays_in_weekend_nights + stays_in_week_nights,
+                       childrens = children+babies) %>%
+                mutate(have_baby = (childrens != 0)) %>% 
+                dplyr::select(-country,-agent,-company, -childrens, -children, -babies) %>% 
+                filter(adults <= 10) %>% 
+                filter(total_stays_night != 0) %>% 
+                filter(adr < 4000)
+
+head(df)
+```
 
 ## 캔슬이 유독 많다. 
 ```{r}
@@ -59,7 +77,7 @@ df %>%
     mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
     filter(is_repeated_guest == F) %>%
     filter(previous_cancellations != 0) %>% 
-    select(previous_cancellations) %>%
+    dplyr::select(previous_cancellations) %>%
     table()
 
 #  방문 경험이 있는 사람이 과거에 캔슬한 횟수 
@@ -67,18 +85,18 @@ df %>%
     mutate(is_repeated_guest = as.logical(is_repeated_guest)) %>%
     filter(is_repeated_guest == T) %>%
     filter(previous_cancellations != 0) %>% 
-    select(previous_cancellations) %>%
+    dplyr::select(previous_cancellations) %>%
     table()
 ```
 ```{r}
-# ggplot 객체를 미리 정의합니다.
 plot_list <- list()
 
 for (i in 0:1){
   plot_list[[i + 1]] <- df %>% 
+      filter(hotel == "City Hotel") %>%
     group_by(is_repeated_guest) %>% 
     filter(previous_cancellations > i) %>% 
-    select(previous_cancellations) %>%
+    dplyr::select(previous_cancellations) %>%
     count(previous_cancellations, name = "freq") %>%
     ungroup() %>%
     ggplot(aes(x = as.factor(previous_cancellations), y = freq, fill = as.factor(is_repeated_guest))) +
@@ -92,6 +110,135 @@ for (i in 0:1){
 for (i in 1:length(plot_list)) {
   print(plot_list[[i]])
 }
+```
+
+```{r}
+# ggplot 객체를 미리 정의합니다.
+plot_list <- list()
+
+for (i in 0:1){
+  plot_list[[i + 1]] <- df %>% 
+      filter(hotel == "Resort Hotel") %>%
+    group_by(is_repeated_guest) %>% 
+    filter(previous_cancellations > i) %>% 
+    dplyr::select(previous_cancellations) %>%
+    count(previous_cancellations, name = "freq") %>%
+    ungroup() %>%
+    ggplot(aes(x = as.factor(previous_cancellations), y = freq, fill = as.factor(is_repeated_guest))) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(x = "Previous Cancellations", y = "Frequency", fill = "Is Repeated Guest") +
+    scale_fill_manual(values = boolean_palette) + 
+    ggtitle(paste("Num of Cancellation (Previous Cancellations > ", i, ")")) + 
+    theme_minimal()
+}
+
+for (i in 1:length(plot_list)) {
+  print(plot_list[[i]])
+}
+```
+```{r}
+df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    dplyr::select(deposit_type) %>% 
+    table()
+
+df %>% 
+    filter(hotel == "City Hotel") %>%
+    dplyr::select(deposit_type) %>% 
+    table()
+```
+```{r}
+df %>% 
+    filter(hotel == "City Hotel") %>%
+  #  filter(deposit_type == "Non Refund") %>%
+    ggplot() + geom_density(aes(lead_time, color=deposit_type)) + facet_wrap(~is_canceled) + ggtitle("City")
+
+df %>% 
+    filter(hotel == "Resort Hotel") %>%
+  #  filter(deposit_type == "Non Refund") %>%
+    ggplot() + geom_density(aes(lead_time, color=deposit_type)) + facet_wrap(~is_canceled) + ggtitle("Resort")
+    
+```
+```{r}
+df %>% 
+    filter(hotel == "City Hotel") %>%
+    filter(deposit_type != "No Deposit") %>%
+    ggplot() + geom_bar(aes(adr, color=deposit_type)) + facet_wrap(~is_canceled)
+
+df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    filter(deposit_type != "No Deposit") %>%
+    ggplot() + geom_bar(aes(adr, color=deposit_type)) + facet_wrap(~is_canceled)
+```
+```{r}
+df %>% 
+    group_by(hotel, deposit_type) %>%
+    summarize(across(everything(), mean, na.rm = TRUE))
+
+df %>% 
+    group_by(hotel, is_prt) %>%
+    summarize(across(everything(), mean, na.rm = TRUE))
+
+df %>% 
+    group_by(hotel, is_repeated_guest) %>%
+    summarize(across(everything(), mean, na.rm = TRUE))
+```
+```{r}
+select = dplyr::select
+
+df %>%
+    ggplot(aes(x = deposit_type, y = adr, color = deposit_type)) +
+  geom_point() +
+  facet_wrap(~hotel) +
+  labs(title = "ADR by Deposit Type and Hotel",
+       x = "Deposit Type",
+       y = "ADR") +
+  theme_minimal()
+```
+```{r}
+df %>%
+    ggplot(aes(x = deposit_type, y = adr)) +
+  geom_violin(aes(fill = deposit_type)) +
+    geom_boxplot(width=.1) + 
+  facet_wrap(~hotel) +
+  labs(title = "ADR by Deposit Type and Hotel",
+       x = "Deposit Type",
+       y = "ADR") +
+  theme_minimal()
+```
+
+```{r}
+total_df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    ggplot(aes(is_repeated_guest, fill=factor(is_repeated_guest))) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    facet_wrap(~is_canceled) + 
+    ggtitle("Current Cancellation")
+
+total_df %>% 
+    filter(hotel == "City Hotel") %>%
+    ggplot(aes(is_repeated_guest, fill=factor(is_repeated_guest))) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    facet_wrap(~is_canceled) + 
+    ggtitle("Current Cancellation")
+
+total_df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    filter(is_repeated_guest == T) %>%
+    ggplot(aes(is_canceled, fill=factor(is_canceled))) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    ggtitle("Current Cancellation")
+
+total_df %>% 
+    filter(hotel == "City Hotel") %>%
+    filter(is_repeated_guest == T) %>%
+    ggplot(aes(is_canceled, fill=factor(is_canceled))) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    ggtitle("Current Cancellation")
 ```
 
 첫 방문 고객 중에 한 번 캔슬한 경우가 압도적으로 많았다. 시각화에 있어 1이 outlier의 역할을 하기에, 1을 제외한 그래프를 그렸다. 그 결과 고빈도 캔슬 수는 첫 방문인 경우가 많고, 저빈도 캔슬 수는 재방문인 경우가 많았다. 
@@ -114,6 +261,18 @@ repeated_guest_df %>%
 ```
 ```{r}
 repeated_guest_df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    mutate(has_canceled = (previous_cancellations != 0),
+           is_canceled = as.factor(is_canceled)) %>%
+    ggplot(aes(has_canceled, fill=has_canceled)) + 
+    geom_bar() + 
+    scale_fill_manual(values = boolean_palette) + 
+    facet_wrap(~is_canceled) + 
+    ggtitle("Current Cancellation")
+
+repeated_guest_df %>% 
+  #  filter(hotel == "Resort Hotel") %>%
+    filter(hotel == "City Hotel") %>%
     mutate(has_canceled = (previous_cancellations != 0),
            is_canceled = as.factor(is_canceled)) %>%
     ggplot(aes(has_canceled, fill=has_canceled)) + 
@@ -122,11 +281,19 @@ repeated_guest_df %>%
     facet_wrap(~is_canceled) + 
     ggtitle("Current Cancellation")
 ```
+
 이렇게만 봐서는 제대로 보이지 않는다. 
 
 ```{r}
 # 전체 데이터 중 과거 캔슬을 한 적 있는 사람의 비율 
 length(df$previous_cancellations[df$previous_cancellations != 0]) / length(df$previous_cancellations)
+```
+```{r}
+repeated_guest_df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    mutate(has_canceled = (previous_cancellations != 0),
+           is_canceled = as.factor(is_canceled)) %>%
+    dplyr::select(has_canceled, is_canceled)
 ```
 
 ```{r}
@@ -188,13 +355,14 @@ df %>%
 ## 예약한 방 - 받은 방
 ```{r}
 df %>%
+  filter(hotel == "City Hotel") %>%
   group_by(reserved_room_type) %>%
   count(assigned_room_type) %>%
   mutate(proportion = n / sum(n)) %>%
   ungroup() %>%
-    ggplot(aes(x = reserved_room_type, y = assigned_room_type, fill = proportion)) +
+    ggplot(aes(x = assigned_room_type, y = reserved_room_type, fill = proportion)) +
   geom_tile() +
-  scale_fill_continuous(name = "Proportion", labels = scales::percent, , low = "lightgrey", high = "purple") +
+#  scale_fill_continuous(name = "Proportion", labels = scales::percent, , low = "lightgrey", high = "purple") +
   labs(x = "Reserved Room Type", y = "Assigned Room Type") +
   theme_minimal()
 ```
@@ -213,3 +381,87 @@ df %>%
     ggplot() + geom_bin_2d(aes(reserved_room_type, is_canceled, fill=proportion))
 ```
 P 타입 방을 예약한 사람이 전부 예약을 취소했다. 
+```{r}
+df %>% 
+    ggplot(aes(adr)) + geom_boxplot(aes(fill=arrival_date_month))
+
+df %>% 
+    filter(hotel == "City Hotel") %>%
+    ggplot(aes(adr)) + geom_boxplot(aes(fill=arrival_date_month))
+
+df %>% 
+    filter(hotel == "Resort Hotel") %>%
+    ggplot(aes(adr)) + geom_boxplot(aes(fill=arrival_date_month))
+```
+```{r}
+df %>% 
+    ggplot(aes(headcount)) + geom_bar(aes(fill=factor(headcount)))
+
+df_ratio <- df %>%
+    group_by(hotel, headcount) %>%
+    summarise(count = n()) %>%
+    ungroup(headcount) %>% 
+    mutate(proportion = count / sum(count), 
+           cnt = sum(count)) %>%
+    ungroup()
+
+df_ratio
+
+# 비율로 시각화
+df_ratio %>%
+    group_by(hotel) %>%
+    mutate(mean_val = sum(count * proportion)/cnt) %>%
+    ungroup() %>%
+    ggplot(aes(x = factor(headcount), y = proportion, fill = factor(headcount))) +
+    geom_bar(stat = "identity", position = "dodge") +
+    facet_wrap(~ hotel)
+```
+```{r}
+df_ratio %>%
+    group_by(hotel) %>%
+    mutate(mean_val = sum(count * proportion)/cnt) %>%
+    ungroup() %>%
+    ggplot(aes(x = factor(headcount), y = proportion, fill = hotel)) +
+    geom_bar(stat = "identity", position=position_dodge())
+```
+
+```{r}
+
+df_ratio %>%
+    group_by(hotel) %>%
+    mutate(mean_val = sum(count * proportion)/cnt) %>%
+    ungroup() %>%
+    ggplot(aes(x = hotel, y = proportion, fill = factor(headcount))) +
+    geom_bar(stat = "identity", width=0.5) + 
+    geom_text(aes(label = scales::percent(proportion, accuracy = 0.1)), 
+            position = position_stack(vjust = 0.5), size = 3, color = "white")
+```
+
+
+```{r}
+df_ratio %>%
+  ggplot(aes(x = factor(headcount), y = proportion, fill = factor(headcount))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +  # y축을 백분율로 표시
+  facet_wrap(~ hotel) +
+  labs(
+    x = "Headcount",
+    y = "Proportion",
+    fill = "Headcount"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"))
+```
+```{r}
+ggplot(df_ratio, aes(x = factor(headcount), y = proportion, fill = factor(headcount))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +  # y축을 백분율로 표시
+  labs(
+    x = "Headcount",
+    y = "Proportion",
+    fill = "Headcount",
+    color = "Hotel"
+  ) +
+  theme_minimal()
+```
+

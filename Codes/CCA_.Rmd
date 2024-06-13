@@ -6,6 +6,7 @@ output: html_notebook
 ```{r}
 library(tidyverse)
 library(CCA)
+library(reshape)
 ```
 
 ```{r}
@@ -13,26 +14,25 @@ df = read.csv("/Users/jimin/Desktop/지민/ewha/2024-1/다변�
 head(df)
 ```
 ```{r}
-df = df %>% 
-        filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
-        distinct() %>% # 중복 데이터 삭제 
-        filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
-    #    select(-agent,-company, -country) %>% # 사용하지 않을 agent, company 삭제
-        mutate(reservation_status_date = as.Date(reservation_status_date)) # reservation_status_date dtype 변환
-
-head(df)
-```
-
-
-## 데이터 추가 
-```{r}
 total_df = df %>% 
-            mutate(is_prt = (country == "PRT"),
-                   headcount = (adults+children+babies),
-                   total_stays_night = stays_in_weekend_nights + stays_in_week_nights)
+            filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+                distinct() %>% # 중복 데이터 삭제 
+                filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+                mutate(reservation_status_date = as.Date(reservation_status_date),
+                       is_prt = (country == "PRT"),
+                       headcount = (adults+children+babies),
+                       total_stays_night = stays_in_weekend_nights + stays_in_week_nights,
+                       childrens = children+babies) %>%
+                mutate(have_baby = (childrens != 0)) %>% 
+                dplyr::select(-country,-agent,-company, -childrens, -children, -babies) %>% 
+                filter(adults <= 10) %>% 
+                filter(total_stays_night != 0) %>% 
+                filter(adr < 4000)
 
 head(total_df)
 ```
+
+
 ```{r}
 total_df %>% 
     ggplot() + geom_bar(aes(hotel, fill=hotel))
@@ -43,18 +43,11 @@ resort_df = total_df %>% filter(hotel == "Resort Hotel")
 city_df = total_df %>% filter(hotel == "City Hotel")
 ```
 
-```{r}
-total_df %>% select(lead_time)
-```
 
 ```{r}
-resort_client = resort_df %>% select(adults, children, babies, customer_type, is_prt, headcount)
+resort_client = resort_df %>% dplyr::select(have_baby, customer_type, is_prt, headcount)
 
-resort_reservation_pattern = resort_df %>% select(is_canceled, lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, required_car_parking_spaces, total_of_special_requests, reservation_status) # reservation_status_date
-
-resort_lodgment = resort_df %>% select(arrival_date_year, arrival_date_month, arrival_date_week_number, total_stays_night, arrival_date_day_of_month, stays_in_weekend_nights, stays_in_week_nights, reserved_room_type, assigned_room_type, meal)
-
-resort_reservation_route = resort_df %>% select(distribution_channel, market_segment)
+resort_reservation_pattern = resort_df %>% select(is_canceled, lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, adr, required_car_parking_spaces, total_of_special_requests, reservation_status) # reservation_status_date
 
 ```
 
@@ -139,6 +132,10 @@ resort_reservation_pattern$deposit_type = case_when(
 resort_reservation_pattern
 ```
 ```{r}
+resort_reservation = data.frame(apply(resort_reservation_pattern, 2, normalize))
+```
+
+```{r}
 normalize <- function(x) {
   return((x - mean(x)) / sd(x))
 }
@@ -148,11 +145,12 @@ resort_reservation_pattern = resort_reservation_pattern %>%
                                          adr = normalize(adr),
                                          days_in_waiting_list = normalize(days_in_waiting_list))
 
+
 head(resort_reservation_pattern)
 ```
 
 ```{r}
-cc1 = cc(resort_client[-1], resort_reservation_pattern)
+cc1 = cc(resort_client, resort_reservation)
 ```
 
 ```{r}
@@ -172,9 +170,12 @@ make_corr_heatmap(cc1$scores$corr.Y.xscores)
 make_corr_heatmap(cc1$scores$corr.Y.yscores)
 ```
 ```{r}
-mtc = matcor(resort_client, resort_reservation_pattern)
+mtc = matcor(resort_client, resort_reservation)
 
 img.matcor(mtc, type=2)
+```
+```{r}
+plt.cc(cc1, type = "v", var.label = T)
 ```
 
 ### City
@@ -256,4 +257,13 @@ plt.cc(cc1, type="i", var.label = T)
 ```
 
 
+```{r}
+total_df %>% 
+    ggplot(aes(is_prt,adr, fill=is_prt)) + 
+    geom_violin() + 
+    geom_boxplot(width=0.3) + 
+    scale_fill_manual(values = boolean_palette) + 
+    facet_wrap(~hotel)
+
+```
 

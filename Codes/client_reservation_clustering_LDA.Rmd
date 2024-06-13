@@ -355,6 +355,9 @@ ld.result
 pred = predict(ld.result, test_dataset)$class
 mean(test_dataset$group == pred)
 ```
+```{r}
+predict(ld.result, test_dataset)
+```
 
 ```{r}
 make_coef_heatmap(ld.result$means)

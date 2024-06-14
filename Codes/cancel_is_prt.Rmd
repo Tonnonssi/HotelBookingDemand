@@ -1,0 +1,1421 @@
+---
+title: "MV_teamproject"
+author: "sumr"
+date: "2024-06-01"
+output: word_document
+---
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(MASS)
+library(dplyr)
+library(caret)
+library(reshape2)
+```
+
+## data importing + preprocessing
+```{r}
+df = read.csv("./source/hotel_bookings.csv")
+
+#기본 전처리
+df = df %>% 
+            filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+                distinct() %>% # 중복 데이터 삭제 
+                filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+                dplyr :: select(-agent,-company) %>% # 사용하지 않을 agent, company 삭제
+                mutate(reservation_status_date = as.Date(reservation_status_date)) %>% # reservation_status_date dtype 변환
+                filter(adults <= 10) %>% #adults 수가 너무 많은 경우는 오류로 판단
+                filter(adr<=1000) #추가 : adr에 5400이라는 outlier존재
+
+#변수 3개를 추가한 최종 전처리
+total_df  = df %>%
+                mutate(is_prt = (country == "PRT"), #포르투갈 사람인지 TF로 나타내는 행
+                       headcount = (adults+children+babies), #전체 사람 수
+                       total_stays_night = stays_in_weekend_nights + stays_in_week_nights) %>% #전체 숙박 수
+                filter(total_stays_night != 0) #묵지 않은 경우는 오류나 결측치로 판단하고 없애기
+
+dim(total_df)
+head(total_df)
+str(total_df)
+library(dplyr)
+library(purrr)
+
+#한번에 바꾸는 함수
+convert_multiple_to_numeric <- function(df, columns_mappings) {
+  # df: 데이터 프레임
+  # columns_mappings: 변환할 열 이름과 매핑 리스트의 리스트 (예: list("customer_type" = list("Contract" = 1, "Group" = 2), "other_column" = list("A" = 1, "B" = 2)))
+  
+  for (column_name in names(columns_mappings)) {
+    mapping <- unlist(columns_mappings[[column_name]])
+    df <- df %>%
+      mutate(!!sym(column_name) := case_when(
+        !!sym(column_name) %in% names(mapping) ~ mapping[!!sym(column_name)],
+        TRUE ~ NA_real_
+      ))
+  }
+  
+  return(df)
+}
+
+# 변환할 열 List
+columns_mappings = list(
+  "customer_type" = list("Contract" = 1, "Group" = 2, "Transient" = 3, "Transient-Party" = 4),
+  "hotel" = list("Resort Hotel" = 1, "City Hotel" = 2),
+  "arrival_date_month" = list("July" =7,  "August"=8 ,"September"=9, "October"=10, "November"=11, "December"=12,  "January" =1, "February" =2,  "March" =3, "April" =4, "May" =5,  "June" =6 ),
+  "meal" = list("BB" = 1, "FB" =2 , "HB"=3, "SC"=4, "Undefined" =5),
+  "market_segment" = list("Direct"=1, "Corporate"=2, "Online TA"=3, "Offline TA/TO"=4, "Complementary" =5, "Groups" =6,  "Aviation" = 7),
+  "distribution_channel" = list("Direct" =1,  "Corporate" =2, "TA/TO"=3, "Undefined" =4, "GDS"=5),
+  "reserved_room_type" = list("A"=1,"B"=2, "C"=3, "D"=4, "E"=5, "F"=6, "G"=7, "H"=8, "L"=9),
+  "assigned_room_type" = list("A"=1,"B"=2, "C"=3, "D"=4, "E"=5, "F"=6, "G"=7, "H"=8, "L"=9, "I"=10, "K"=11),
+  "deposit_type" = list("No Deposit"=1,"Refundable"=2, "Non Refund"=3)
+)
+#unique(total_df$arrival_date_month)
+
+
+# 다중 열 변환
+converted_total_df = convert_multiple_to_numeric(total_df, columns_mappings) %>% mutate(across(where(is.logical), as.integer))
+
+
+#mini preprocessing
+#arrival_date_week_number : 그 년도의 몇번째 주인지 -> 월과 중복되어 삭제
+#arrival_date_day_of_month : 삼등분하여 월초/ 월중순/ 월말로만 보기
+converted_total_df = converted_total_df %>%
+  mutate(arrival_date_day_of_month_new = case_when(
+    arrival_date_day_of_month <= 10 ~ 1,
+    arrival_date_day_of_month <= 20 ~ 2,
+    TRUE ~ 3
+  ))
+
+
+```
+
+
+
+
+#3. 캔슬이 될 위험이 높은 예약자 파악
+    * 1. is_canceled를 타겟으로 설정하고 LDA를 진행 / 혹은 PCA 주성분 분석 (둘 다?)
+    * 2. 설명 변수 : 예약 패턴 / 숙박 관련 / 예약자 특성 어떤 것도 사용할 수 있음 다양하게 해보자
+    * 3. 캔슬이 될 위험이 높은 사람에게 맞춤형 광고 제공
+
+* 예약 패턴 관련 : required car parking space는 cancel이면 무조건 0이므로 제외
+```{r}
+k1 = converted_total_df %>% filter(hotel == 1) %>% dplyr :: select(lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, total_of_special_requests) %>%
+  scale() %>%
+  as.data.frame()
+j1 = converted_total_df %>% filter(hotel==1) %>% dplyr :: select(is_canceled)
+
+cancel1_resort = cbind(j1,k1)
+cancel1_resort
+
+lda_model_1_resort = lda(is_canceled ~ ., data = cancel1_resort)
+lda_model_1_resort
+
+lda_prediction_1_resort = predict(lda_model_1_resort)
+lda_df_1_resort = data.frame(lda_prediction_1_resort$x)
+lda_df_1_resort$is_canceled = cancel1_resort$is_canceled
+
+error.rate = mean(cancel1_resort$is_canceled != lda_prediction_1_resort$class)
+error.rate
+
+cancel_colors = c("No" = "lightskyblue1", "Yes" = "lightpink1")
+lda_df_1_resort = lda_df_1_resort %>% mutate(label=ifelse(is_canceled == 0, "No","Yes"))
+ggplot(lda_df_1_resort, aes(x = LD1, fill=label,color = label)) +
+  geom_density(aes(alpha = 0.5)) +
+  scale_fill_manual(values = cancel_colors) +  
+  scale_color_manual(values = cancel_colors) +
+  labs(fill = "Cancel") +
+  ggtitle("LDA : Analysis on Reservation Pattern Variables - Resort Hotel") +
+  theme_minimal() + xlim(-5,5) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  guides(color = FALSE, alpha = FALSE)
+
+
+
+#----------------------
+
+
+k2 = converted_total_df %>% filter(hotel == 2) %>% dplyr :: select(lead_time, is_repeated_guest, previous_cancellations, previous_bookings_not_canceled, booking_changes, deposit_type, days_in_waiting_list, adr, total_of_special_requests) %>%
+  scale() %>%
+  as.data.frame()
+j2 = converted_total_df %>% filter(hotel==2) %>% dplyr :: select(is_canceled)
+
+cancel1_city = cbind(j2,k2)
+
+
+
+cancel1_city
+
+lda_model_1_city = lda(is_canceled ~ ., data = cancel1_city)
+lda_model_1_city
+
+lda_prediction_1_city = predict(lda_model_1_city)
+lda_df_1_city = data.frame(lda_prediction_1_city$x)
+lda_df_1_city$is_canceled = cancel1_city$is_canceled
+
+error.rate = mean(cancel1_city$is_canceled != lda_prediction_1_city$class)
+error.rate
+
+cancel_colors = c("No" = "steelblue1", "Yes" = "salmon1")
+lda_df_1_city = lda_df_1_city %>% mutate(label=ifelse(is_canceled == 0, "No","Yes"))
+ggplot(lda_df_1_city, aes(x = LD1, fill=label,color = label)) +
+  geom_density(aes(alpha = 0.5)) +  
+  scale_fill_manual(values = cancel_colors) +  
+  scale_color_manual(values = cancel_colors) +
+  labs(fill = "Cancel") +
+  ggtitle("LDA : Analysis on Reservation Pattern Variables - City Hotel") +
+  theme_minimal() + xlim(-5,5) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  guides(color = FALSE, alpha = FALSE)
+
+
+ggplot(lda_df_1_city, aes(x = LD1, fill = label)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  ggtitle("LDA : Histogram of LD1 by Cancellation Status") +
+  theme_minimal() +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+  guides(fill = FALSE)
+
+
+ggplot(lda_df_1_resort, aes(x = LD1, fill = label)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  ggtitle("LDA : Histogram of LD1 by Cancellation Status") +
+  theme_minimal() +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+  guides(fill = FALSE)
+
+```
+
+
+
+* 숙박관련
+```{r}
+k21 = converted_total_df %>% filter(hotel == 1) %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_week_number, total_stays_night, arrival_date_day_of_month_new, stays_in_weekend_nights, stays_in_week_nights, reserved_room_type, assigned_room_type, meal) %>%
+  scale() %>%
+  as.data.frame()
+j21 = converted_total_df %>% filter(hotel==1) %>% dplyr :: select(is_canceled)
+
+cancel2_resort = cbind(j21,k21)
+cancel2_resort
+
+lda_model_2_resort = lda(is_canceled ~ ., data = cancel2_resort)
+lda_model_2_resort
+
+lda_prediction_2_resort = predict(lda_model_2_resort)
+lda_df_2_resort = data.frame(lda_prediction_2_resort$x)
+lda_df_2_resort$is_canceled = cancel2_resort$is_canceled
+
+error.rate = mean(cancel2_resort$is_canceled != lda_prediction_2_resort$class)
+error.rate
+
+cancel_colors = c("No" = "lightskyblue1", "Yes" = "lightpink1")
+lda_df_2_resort = lda_df_2_resort %>% mutate(label=ifelse(is_canceled == 0, "No","Yes"))
+ggplot(lda_df_2_resort, aes(x = LD1, fill=label,color = label)) +
+  geom_density(aes(alpha = 0.5)) +
+  scale_fill_manual(values = cancel_colors) +  
+  scale_color_manual(values = cancel_colors) +
+  labs(fill = "Cancel") +
+  ggtitle("LDA : Analysis on Lodgment Related Variables - Resort Hotel") +
+  theme_minimal() + xlim(-5,5) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  guides(color = FALSE, alpha = FALSE)
+
+
+
+#----------------------
+
+
+k22 = converted_total_df %>% filter(hotel == 2) %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_week_number, total_stays_night, arrival_date_day_of_month_new, stays_in_weekend_nights, stays_in_week_nights, reserved_room_type, assigned_room_type, meal) %>%
+  scale() %>%
+  as.data.frame()
+j22 = converted_total_df %>% filter(hotel==2) %>% dplyr :: select(is_canceled)
+
+cancel2_city = cbind(j22,k22)
+
+
+
+cancel2_city
+
+lda_model_2_city = lda(is_canceled ~ ., data = cancel2_city)
+lda_model_2_city
+
+lda_prediction_2_city = predict(lda_model_2_city)
+lda_df_2_city = data.frame(lda_prediction_2_city$x)
+lda_df_2_city$is_canceled = cancel2_city$is_canceled
+
+error.rate = mean(cancel2_city$is_canceled != lda_prediction_2_city$class)
+error.rate
+
+cancel_colors = c("No" = "steelblue1", "Yes" = "salmon1")
+lda_df_2_city = lda_df_2_city %>% mutate(label=ifelse(is_canceled == 0, "No","Yes"))
+ggplot(lda_df_2_city, aes(x = LD1, fill=label,color = label)) +
+  geom_density(aes(alpha = 0.5)) +  
+  scale_fill_manual(values = cancel_colors) +  
+  scale_color_manual(values = cancel_colors) +
+  labs(fill = "Cancel") +
+  ggtitle("LDA : Analysis on Reservation Pattern Variables - City Hotel") +
+  theme_minimal() + xlim(-5,5) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  guides(color = FALSE, alpha = FALSE)
+
+
+```
+
+
+
+#4. 내국인 외국인 모델 - 모델 생성 후 경향 분석
+   * 1. is_prt를 타겟으로 설정하고 LDA를 진행
+
+```{r}
+# 호텔이 resort인 경우
+prt_data = converted_total_df %>% dplyr :: select(is_prt, hotel, is_canceled, lead_time, is_repeated_guest, required_car_parking_spaces, headcount, total_stays_night)
+
+prt_data_hotel1 = prt_data %>% filter(hotel == 1)
+lda_prt_hotel1 = lda(is_prt ~ ., data = prt_data_hotel1[,-2])
+lda_prediction_prt_hotel1 = predict(lda_prt_hotel1)
+lda_df_prt_hotel1 = data.frame(lda_prediction_prt_hotel1$x)
+lda_df_prt_hotel1$is_prt = prt_data_hotel1$is_prt
+lda_prt_hotel1
+
+# 호텔이 city인 경우
+prt_data_hotel2 = prt_data %>% filter(hotel == 2)
+lda_prt_hotel2 = lda(is_prt ~ ., data = prt_data_hotel2[,-2])
+lda_prediction_prt_hotel2 = predict(lda_prt_hotel2)
+lda_df_prt_hotel2 = data.frame(lda_prediction_prt_hotel2$x)
+lda_df_prt_hotel2$is_prt = prt_data_hotel2$is_prt
+
+# 시각화 함수 정의
+plot_lda = function(lda_df, title) {
+  lda_df = lda_df %>% mutate(label = ifelse(is_prt == 0, "No", "Yes"))
+  ggplot(lda_df, aes(x = LD1, fill = label, color = label)) +
+    geom_density(aes(alpha = 0.5)) +
+    scale_fill_manual(values = cancel_colors) +
+    scale_color_manual(values = cancel_colors) +
+    labs(fill = "Portuguese") +
+    ggtitle(title) +
+    theme_minimal() + xlim(-5, 5) +
+    theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+          plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+          axis.title.x = element_text(margin = margin(t = 20)),
+          text = element_text(family = "NanumGothic")) + 
+    guides(color = FALSE, alpha = FALSE)
+}
+
+# 호텔이 1인 경우 시각화
+plot_lda(lda_df_prt_hotel1, "LDA : Analysis on Variables - related to PRT (Resort Hotel")
+
+# 호텔이 2인 경우 시각화
+plot_lda(lda_df_prt_hotel2, "LDA : Analysis on Variables - related to PRT (City Hotel)")
+
+
+```
+
+```{r}
+# 필요한 라이브러리 로드
+library(dplyr)
+library(ggplot2)
+
+# 상수 변수 제거
+variances = apply(prt_data, 2, var)
+constant_vars = names(variances[variances == 0])
+prt_data_filtered = prt_data
+
+# 데이터 분리
+set.seed(123)  # 재현성을 위해 시드 설정
+train_index = sample(1:nrow(prt_data_filtered), 0.7 * nrow(prt_data_filtered))
+train_data = prt_data_filtered[train_index, ]
+test_data = prt_data_filtered[-train_index, ]
+
+# 로지스틱 회귀 모델 학습
+logistic_model = glm(is_prt ~ ., data = train_data, family = binomial)
+
+# 예측
+test_data$predicted = predict(logistic_model, newdata = test_data, type = "response")
+test_data$predicted_class = ifelse(test_data$predicted > 0.5, 1, 0)
+
+# 성능 평가
+confusion_matrix = table(test_data$is_prt, test_data$predicted_class)
+accuracy = sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+
+# 색상 정의
+cancel_colors = c("0" = "steelblue1", "1" = "salmon1")
+
+# 시각화
+ggplot(test_data, aes(x = predicted, fill = factor(is_prt))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = cancel_colors) +
+  labs(fill = "Portuguese") +
+  ggtitle("Logistic Regression: Prediction Density") +
+  theme_minimal() +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 15, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  guides(color = FALSE, alpha = FALSE)
+
+```
+
+
+#7. 숙박 특성에 따른 군집 분석
+   * 1. 클러스터링을 이용
+   * 2. 숙박 특성에 따른 군집 생성 → 군집 별 경향성 분석 
+   * 3. 군집 특성에 맞는 광고 및 서비스 제공, 특이한 패턴이 발생할 때 대응 방법 
+   * 4. → 만들어진 군집을 바탕으로 LDA 진행 : 경향성 및 분류가 가능
+```{r}
+#Resort
+
+#mini preprocessing
+#arrival_date_week_number : 그 년도의 몇번째 주인지 -> 월과 중복되어 삭제
+#arrival_date_day_of_month : 삼등분하여 월초/ 월중순/ 월말로만 보기
+converted_total_df = converted_total_df %>%
+  mutate(arrival_date_day_of_month_new = case_when(
+    arrival_date_day_of_month <= 10 ~ 1,
+    arrival_date_day_of_month <= 20 ~ 2,
+    TRUE ~ 3
+  ))
+
+
+cluster_resort = converted_total_df %>% filter(hotel == 1) %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_day_of_month_new, total_stays_night, stays_in_weekend_nights, stays_in_week_nights, reserved_room_type, assigned_room_type, meal)
+
+
+resort.k.clusters = kmeans(cluster_resort, centers = 4)
+cluster_resort = cluster_resort %>%
+  mutate(cluster = resort.k.clusters$cluster)
+
+table(cluster_resort$cluster)
+
+
+#도착연도
+ggplot(cluster_resort, aes(x = as.factor(arrival_date_year), fill = as.factor(arrival_date_year))) +
+  geom_bar() +
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : Year", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : Year")
+
+
+#도착월
+ggplot(cluster_resort, aes(x = as.factor(arrival_date_month), fill = as.factor(arrival_date_month))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : Month", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : Month")
+
+
+#도착 월의 시점(초/중/후)
+ggplot(cluster_resort, aes(x = as.factor(arrival_date_day_of_month_new), fill = as.factor(arrival_date_day_of_month_new))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : time of Month", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : time of Month")
+
+
+#전체 숙박수
+ggplot(cluster_resort, aes(x = as.factor(total_stays_night), fill = as.factor(total_stays_night))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Total Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Total Stays Night")
+
+
+#주말 숙박수
+ggplot(cluster_resort, aes(x = as.factor(stays_in_weekend_nights), fill = as.factor(stays_in_weekend_nights))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Weekend Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Weekend Stays Night")
+
+
+#주중 숙박수
+ggplot(cluster_resort, aes(x = as.factor(stays_in_week_nights), fill = as.factor(stays_in_week_nights))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Weekday Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Weekday Stays Night")
+
+
+#예약한 방 타입
+ggplot(cluster_resort, aes(x = as.factor(reserved_room_type), y=as.factor(assigned_room_type))) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "lightpink2", linetype = "dashed") + 
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  scale_fill_discrete(name = "Reserved : Assigned Room Type")
+
+
+#크기로 표현
+
+ggplot(cluster_resort_table, aes(x = as.factor(reserved_room_type), y=as.factor(assigned_room_type))) + geom_point(aes(size = Freq))+
+  geom_abline(intercept = 0, slope = 1, color = "lightpink2", linetype = "dashed") + 
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  scale_fill_discrete(name = "Reserved : Assigned Room Type")
+
+
+#히트맵
+
+cluster_resort_table = cluster_resort %>% group_by(cluster) %>%
+  do(data.frame(table(.$reserved_room_type, .$assigned_room_type))) %>%
+  ungroup()
+
+# 열 이름 설정
+colnames(cluster_resort_table) = c("cluster", "reserved_room_type", "assigned_room_type", "Freq")
+
+cluster_resort_table
+
+ggplot(cluster_resort_table, aes(x = as.factor(reserved_room_type), y = as.factor(assigned_room_type), fill = Freq)) +
+  geom_tile() +
+  facet_wrap(~ cluster) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  guides(fill = guide_legend(title = "Frequency"))
+
+
+#식사타입
+ggplot(cluster_resort, aes(x = as.factor(meal), fill = as.factor(meal))) +
+  geom_bar() +
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Meal Type", y = "Count") +
+  scale_fill_discrete(name = "Meal Type")
+
+
+
+```
+
+
+```{r}
+#City
+
+#mini preprocessing
+#arrival_date_week_number : 그 년도의 몇번째 주인지 -> 월과 중복되어 삭제
+#arrival_date_day_of_month : 삼등분하여 월초/ 월중순/ 월말로만 보기
+converted_total_df = converted_total_df %>%
+  mutate(arrival_date_day_of_month_new = case_when(
+    arrival_date_day_of_month <= 10 ~ 1,
+    arrival_date_day_of_month <= 20 ~ 2,
+    TRUE ~ 3
+  ))
+
+
+cluster_city = converted_total_df %>% filter(hotel == 2) %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_day_of_month_new, total_stays_night, stays_in_weekend_nights, stays_in_week_nights, reserved_room_type, assigned_room_type, meal)
+
+
+city.k.clusters = kmeans(cluster_city, centers = 4)
+cluster_city = cluster_city %>%
+  mutate(cluster = city.k.clusters$cluster)
+
+table(cluster_city$cluster)
+
+
+#도착연도
+ggplot(cluster_city, aes(x = as.factor(arrival_date_year), fill = as.factor(arrival_date_year))) +
+  geom_bar() +
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : Year", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : Year")
+
+
+#도착월
+ggplot(cluster_city, aes(x = as.factor(arrival_date_month), fill = as.factor(arrival_date_month))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : Month", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : Month")
+
+
+#도착 월의 시점(초/중/후)
+ggplot(cluster_city, aes(x = as.factor(arrival_date_day_of_month_new), fill = as.factor(arrival_date_day_of_month_new))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Arrival Date : time of Month", y = "Count") +
+  scale_fill_discrete(name = "Arrival Date : time of Month")
+
+
+#전체 숙박수
+ggplot(cluster_city, aes(x = as.factor(total_stays_night), fill = as.factor(total_stays_night))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Total Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Total Stays Night")
+
+
+#주말 숙박수
+ggplot(cluster_city, aes(x = as.factor(stays_in_weekend_nights), fill = as.factor(stays_in_weekend_nights))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Weekend Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Weekend Stays Night")
+
+
+#주중 숙박수
+ggplot(cluster_city, aes(x = as.factor(stays_in_week_nights), fill = as.factor(stays_in_week_nights))) +
+  geom_bar() +
+  facet_wrap(~ cluster, scales = "free_x") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Weekday Stays Night", y = "Count") +
+  scale_fill_discrete(name = "Weekday Stays Night")
+
+
+#교차표 
+
+
+cluster_city_table = cluster_city %>% group_by(cluster) %>%
+  do(data.frame(table(.$reserved_room_type, .$assigned_room_type))) %>%
+  ungroup()
+
+colnames(cluster_city_table) = c("cluster", "reserved_room_type", "assigned_room_type", "Freq")
+cluster_city_table
+
+
+#크기로 표현
+
+ggplot(cluster_city_table, aes(x = as.factor(reserved_room_type), y=as.factor(assigned_room_type))) + geom_point(aes(size = log(cluster_city_table$Freq + 1)))+
+  geom_abline(intercept = 0, slope = 1, color = "lightpink2", linetype = "dashed") + 
+  facet_wrap(~ cluster, scales = "free") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  scale_fill_discrete(name = "Reserved : Assigned Room Type")
+
+
+ggplot(cluster_city_table, aes(x = as.factor(reserved_room_type), y=as.factor(assigned_room_type))) + geom_point(aes(size = Freq))+
+  geom_abline(intercept = 0, slope = 1, color = "lightpink2", linetype = "dashed") + 
+  facet_wrap(~ cluster, scales = "free") +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  scale_fill_discrete(name = "Reserved : Assigned Room Type")
+
+
+#히트맵
+
+ggplot(cluster_city_table, aes(x = as.factor(reserved_room_type), y = as.factor(assigned_room_type), fill = log(cluster_city_table$Freq + 1))) +
+  geom_tile() +
+  facet_wrap(~ cluster, scales = "free") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(x = "Reserved Room Type", y = "Assigned Room Type") +
+  guides(fill = guide_legend(title = "Frequency"))
+
+
+
+#식사타입
+ggplot(cluster_city, aes(x = as.factor(meal), fill = as.factor(meal))) +
+  geom_bar() +
+  facet_wrap(~ cluster) +
+   theme(
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") +
+  labs(x = "Meal Type", y = "Count") +
+  scale_fill_discrete(name = "Meal Type")
+
+
+
+
+
+```
+
+* 예약자 정보와 clustering 같이 분석
+```{r}
+converted_resort_df = converted_total_df %>% filter(hotel==1)
+converted_resort_df$cluster = cluster_resort$cluster
+head(converted_resort_df)
+
+
+#is_canceled
+
+# 비율 계산
+cancel_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  count(is_canceled) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  mutate(label = ifelse(is_canceled==1, "Canceled","Not Canceled"))
+
+
+# 원형 차트 그리기
+ggplot(cancel_data_resort, aes(x = "", y = percentage, fill = factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~cluster) + 
+  theme_void() +  # 배경 및 축 제거
+  labs(fill = "Cancellation") +
+  scale_fill_manual(values = c("Canceled" = "rosybrown1", "Not Canceled" = "skyblue1")) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+#lead_time
+
+converted_resort_df = converted_total_df %>% filter(hotel==1)
+converted_resort_df$cluster = cluster_resort$cluster
+head(converted_resort_df)
+
+lead_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,lead_time)
+
+lead_data_resort
+
+ggplot(lead_data_resort, aes(x = lead_time, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_density(alpha = 0.3) + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+ggplot(lead_data_resort, aes(x = lead_time, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(alpha = 0.3, stat = "count") + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+
+#is_repeated_guest
+
+# 비율 계산
+repeat_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  count(is_repeated_guest) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  mutate(label = ifelse(is_repeated_guest==1, "Repeated","First Visit"))
+
+
+# 원형 차트 그리기
+ggplot(repeat_data_resort, aes(x = "", y = percentage, fill = factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~cluster) + 
+  theme_void() +  # 배경 및 축 제거
+  labs(fill = "Repeated Visit") +
+  scale_fill_manual(values = c("Repeated" = "rosybrown1", "First Visit" = "skyblue1")) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+#booking_changes
+booking_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,booking_changes)
+
+booking_data_resort
+
+ggplot(booking_data_resort, aes(x = booking_changes, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(stat = "count") + facet_wrap(~cluster, scales = "free_y") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+
+#adr
+
+adr_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,adr)
+
+
+
+
+ggplot(adr_data_resort, aes(x = adr, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(stat = "count") + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+ggplot(adr_data_resort, aes(x=as.factor(cluster), y=adr)) + geom_jitter(aes(colour = as.factor(cluster)), alpha = 0.3, width = 0.25) + geom_boxplot(alpha = 0) + geom_violin(alpha = 0) + 
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+
+
+cluster_city_table2 = cluster_city %>% group_by(cluster) %>%
+  do(data.frame(table(.$reserved_room_type))) %>%
+  ungroup()
+
+colnames(cluster_city_table2) = c("cluster", "reserved_room_type", "Freq")
+cluster_city_table2
+
+
+# 빈도수의 범위 확인
+min_freq <- min(cluster_city_table2$Freq)
+max_freq <- max(cluster_city_table2$Freq)
+
+# 히트맵 시각화
+ggplot(cluster_city_table2, aes(x = as.factor(cluster), y = as.factor(reserved_room_type), fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours = c("white", "lightblue", "blue", "steelblue", "darkblue"),
+    values = scales::rescale(c(min_freq, (min_freq + max_freq) / 4, (min_freq + max_freq) / 2, (min_freq + max_freq) * 3/4, max_freq))
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    text = element_text(family = "NanumGothic")
+  )
+
+
+
+
+#required_car_parking_spaces
+
+rcar_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,required_car_parking_spaces) %>%
+  count(required_car_parking_spaces) %>%
+  mutate(percentage = n/sum(n) * 100) %>%
+  mutate(label = ifelse(required_car_parking_spaces ==0, "0", ifelse(required_car_parking_spaces==1,"1","more than 2"))) %>%
+  group_by(cluster, label) %>%
+  summarise(percentage_sum = sum(percentage))
+
+library(ggrepel)
+
+ggplot(rcar_data_resort, aes(x = "", y = percentage_sum, fill = as.factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  labs(fill = "number of required car parking spaces") +
+  facet_wrap(~cluster, scale = "free") + 
+  theme_void() +  # 배경 및 축 제거
+  scale_fill_manual(values = c("1" = "rosybrown1", "0" = "lightskyblue1", "more than 2" = "rosybrown2")) +
+  geom_text(aes(label = ifelse(percentage_sum < 0.3, "", paste0(round(percentage_sum, 1), "%"))), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  geom_text_repel(aes(y = percentage_sum,label = ifelse(label == "more than 2", paste0(round(percentage_sum, 2), "%"), "")),
+                  nudge_x = 0.6,  # x축으로 이동
+                  nudge_y = 5,  # y축으로 이동
+                  size = 3,
+                  segment.color = "black",  # 화살표 색상
+                  segment.size = 0.3) +  # 화살표 크기
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+#total_of_special_requests
+
+sr_data_resort = converted_resort_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,total_of_special_requests) %>%
+  count(total_of_special_requests) %>%
+  mutate(percentage = n/sum(n) * 100) %>%
+  mutate(label = ifelse(total_of_special_requests ==0, "0", ifelse(total_of_special_requests==1,"1","more than 2"))) %>%
+  group_by(cluster, label) %>%
+  summarise(percentage_sum = sum(percentage))
+
+sr_data_resort
+
+ggplot(sr_data_resort, aes(x = "", y = percentage_sum, fill = as.factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  labs(fill = "number of special requests") +
+  facet_wrap(~cluster, scale = "free") + 
+  theme_void() +  # 배경 및 축 제거
+  scale_fill_manual(values = c("1" = "rosybrown1", "0" = "lightskyblue1", "more than 2" = "rosybrown2")) +
+  geom_text(aes(label = ifelse(percentage_sum < 0.3, "", paste0(round(percentage_sum, 1), "%"))), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+```
+
+# city - 예약자 정보와 함께 분석 
+```{r}
+converted_city_df = converted_total_df %>% filter(hotel==2)
+converted_city_df$cluster = cluster_city$cluster
+head(converted_city_df)
+
+#is_canceled
+
+# 비율 계산
+cancel_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  count(is_canceled) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  mutate(label = ifelse(is_canceled==1, "Canceled","Not Canceled"))
+
+
+# 원형 차트 그리기
+ggplot(cancel_data_city, aes(x = "", y = percentage, fill = factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~cluster) + 
+  theme_void() +  # 배경 및 축 제거
+  labs(fill = "Cancellation") +
+  scale_fill_manual(values = c("Canceled" = "rosybrown1", "Not Canceled" = "skyblue1")) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+#lead_time
+
+lead_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,lead_time)
+
+lead_data_city
+
+ggplot(lead_data_city, aes(x = lead_time, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_density(alpha = 0.3) + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+ggplot(lead_data_city, aes(x = lead_time, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(alpha = 0.3, stat = "count") + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+
+#is_repeated_guest
+
+# 비율 계산
+repeat_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  count(is_repeated_guest) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  mutate(label = ifelse(is_repeated_guest==1, "Repeated","First Visit"))
+
+
+# 원형 차트 그리기
+ggplot(repeat_data_city, aes(x = "", y = percentage, fill = factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~cluster) + 
+  theme_void() +  # 배경 및 축 제거
+  labs(fill = "Repeated Visit") +
+  scale_fill_manual(values = c("Repeated" = "rosybrown1", "First Visit" = "skyblue1")) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+#booking_changes
+booking_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,booking_changes)
+
+
+ggplot(booking_data_city[booking_data_city$booking_changes!=0,], aes(x = booking_changes, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(stat = "count") + facet_wrap(~cluster, scales = "free_y") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+#adr
+
+adr_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,adr) %>%
+  filter(adr >0)
+
+
+
+ggplot(adr_data_city, aes(x = adr, colour = as.factor(cluster), fill = as.factor(cluster), group = as.factor(cluster))) + geom_bar(stat = "count") + facet_wrap(~cluster, scales = "free") +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  )
+
+ggplot(adr_data_city, aes(x=as.factor(cluster), y=adr)) + geom_jitter(aes(colour = as.factor(cluster)), alpha = 0.3, width = 0.25) + geom_boxplot(alpha = 0) + geom_violin(alpha = 0) + 
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic")) + 
+  theme_minimal() +  # 회색 배경 제거
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    text = element_text(family = "NanumGothic")
+  ) + ylim(0,400)
+
+
+
+
+#required_car_parking_spaces
+
+rcar_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,required_car_parking_spaces) %>%
+  count(required_car_parking_spaces) %>%
+  mutate(percentage = n/sum(n) * 100) %>%
+  mutate(label = ifelse(required_car_parking_spaces ==0, "0", ifelse(required_car_parking_spaces==1,"1","more than 2"))) %>%
+  group_by(cluster, label) %>%
+  summarise(percentage_sum = sum(percentage))
+
+library(ggrepel)
+
+ggplot(rcar_data_city, aes(x = "", y = percentage_sum, fill = as.factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  labs(fill = "number of required car parking spaces") +
+  facet_wrap(~cluster, scale = "free") + 
+  theme_void() +  # 배경 및 축 제거
+  scale_fill_manual(values = c("1" = "rosybrown1", "0" = "lightskyblue1", "more than 2" = "rosybrown2")) +
+  geom_text(aes(label = ifelse(percentage_sum < 0.3, "", paste0(round(percentage_sum, 1), "%"))), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  geom_text_repel(aes(y = percentage_sum,label = ifelse(label == "more than 2", paste0(round(percentage_sum, 2), "%"), "")),
+                  nudge_x = 0.6,  # x축으로 이동
+                  nudge_y = 1,  # y축으로 이동
+                  size = 3,
+                  segment.color = "black",  # 화살표 색상
+                  segment.size = 0.3) +  # 화살표 크기
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+#total_of_special_requests
+
+sr_data_city = converted_city_df %>%
+  group_by(cluster) %>%
+  dplyr :: select(cluster,total_of_special_requests) %>%
+  count(total_of_special_requests) %>%
+  mutate(percentage = n/sum(n) * 100) %>%
+  mutate(label = ifelse(total_of_special_requests ==0, "0", ifelse(total_of_special_requests==1,"1","more than 2"))) %>%
+  group_by(cluster, label) %>%
+  summarise(percentage_sum = sum(percentage))
+
+sr_data_city
+
+ggplot(sr_data_city, aes(x = "", y = percentage_sum, fill = as.factor(label))) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  labs(fill = "number of special requests") +
+  facet_wrap(~cluster, scale = "free") + 
+  theme_void() +  # 배경 및 축 제거
+  scale_fill_manual(values = c("1" = "rosybrown1", "0" = "lightskyblue1", "more than 2" = "rosybrown2")) +
+  geom_text(aes(label = ifelse(percentage_sum < 0.3, "", paste0(round(percentage_sum, 1), "%"))), 
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        text = element_text(family = "NanumGothic"))
+
+
+
+```
+
+```{r}
+library(rsample)
+converted_city_df$arrival_date_year = as.factor(converted_city_df$arrival_date_year)
+
+converted_city_accom = converted_city_df %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_day_of_month_new, total_stays_night, assigned_room_type, reserved_room_type, meal, cluster)
+
+converted_city_accom = converted_city_df %>% mutate(is_room_changed = ifelse(converted_city_df$reserved_room_type != converted_city_df$assigned_room_type, 1, 0)) %>% dplyr :: select( arrival_date_month, total_stays_night, assigned_room_type, reserved_room_type, is_room_changed, cluster)
+
+converted_city_accom %>% group_by(cluster) %>%   summarise(
+    total_count = n(),
+    room_changed_count = sum(is_room_changed == 1)
+  ) %>%
+  mutate(room_changed_ratio = room_changed_count / total_count)
+
+
+
+# 데이터 분할 (예: 70% 훈련, 30% 테스트)
+split = initial_split(converted_city_accom, prop = 0.7)
+city_accom_trainData = training(split)
+city_accom_testData = testing(split)
+
+ld.result = lda(cluster~., data = city_accom_trainData)
+ld.pred = predict(ld.result, city_accom_testData)
+pred = ld.pred$class
+mean(city_accom_testData$cluster == pred)
+converted_city_accom
+ld.result
+
+```
+
+
+* 위 결과 시각화 , LDA
+```{r}
+#groupmean
+group_means = aggregate(. ~cluster, data = city_accom_trainData, mean)
+group_means_melt = melt(group_means, id.vars = "cluster")
+
+ggplot(group_means_melt, aes(x = variable, y = cluster, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value,2))) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_minimal() +
+  labs(title = "Group Mean", x = "Variable", y = "cluster", fill = "Coefficient") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#coefficients
+ld.result
+
+coefficients = as.data.frame(ld.result$scaling)
+
+# 계수 데이터 프레임 변환
+coefficients$Variable = rownames(coefficients)
+coefficients_melt = melt(coefficients, id.vars = "Variable")
+
+# 계수 히트맵 생성
+ggplot(coefficients_melt, aes(x = variable, y = Variable, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value,2))) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Coefficient", x = "LD", y = "Variable", fill = "Coefficient")
+
+
+
+#중요도
+
+# 중요도 출력
+importance = ld.result$svd^2 / sum(ld.result$svd^2)
+
+# 중요도 데이터 프레임 생성
+importance_df = data.frame(LD = paste0("LD", 1:length(importance)), Importance = importance)
+
+
+# 중요도 막대 그래프
+ggplot(importance_df, aes(x = LD, y = Importance, fill = LD)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Importance of LDs", x = "", y = "Importance") +
+  geom_text(aes(label = round(importance,2)), vjust = -1) +
+   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  coord_cartesian(clip = "off")
+
+#LD1과 LD2를 이용한다.
+
+#이후의 LD1, LD2에 대한 상세 그래프
+
+# LDA 변환
+ld.data = data.frame(ld.pred$x)
+ld.data$cluster = as.factor(city_accom_testData$cluster)
+
+
+#LD1
+# 바이올린 + 박스 + jitter
+ggplot(ld.data, aes(x = cluster, y = LD1, fill = cluster)) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  geom_boxplot(show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Violin+Box+Jitter Plot for LD1", x = "Cluster", y = "LD1") +   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+#ld2
+ggplot(ld.data, aes(x = cluster, y = LD2, fill = cluster)) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  geom_boxplot(show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Violin+Box+Jitter Plot for LD2", x = "Cluster", y = "LD2") +   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+#점!
+
+ggplot(ld.data, aes(x = LD1, y = LD2, color = cluster)) +
+  geom_point(size = 2) +
+  labs(title = "LDA: 2D Scatter Plot", x = "LD1", y = "LD2") +
+  theme_minimal() +
+  stat_ellipse(level = 0.99) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+
+
+
+```
+
+#resort
+
+```{r}
+library(rsample)
+converted_resort_df$arrival_date_year = as.factor(converted_resort_df$arrival_date_year)
+
+converted_resort_accom = converted_resort_df %>% dplyr :: select(arrival_date_year, arrival_date_month, arrival_date_day_of_month_new, total_stays_night, assigned_room_type, reserved_room_type, meal, cluster)
+
+converted_resort_accom = converted_resort_df %>% mutate(is_room_changed = ifelse(converted_resort_df$reserved_room_type != converted_resort_df$assigned_room_type, 1, 0)) %>% dplyr :: select( arrival_date_month, total_stays_night, assigned_room_type, reserved_room_type, is_room_changed, cluster)
+
+converted_resort_accom %>% group_by(cluster) %>%   summarise(
+    total_count = n(),
+    room_changed_count = sum(is_room_changed == 1)
+  ) %>%
+  mutate(room_changed_ratio = room_changed_count / total_count)
+
+
+# 데이터 분할 (예: 70% 훈련, 30% 테스트)
+split = initial_split(converted_resort_accom, prop = 0.7)
+resort_accom_trainData = training(split)
+resort_accom_testData = testing(split)
+
+ld.result = lda(cluster~., data = resort_accom_trainData)
+ld.pred = predict(ld.result, resort_accom_testData)
+pred = ld.pred$class
+mean(resort_accom_testData$cluster == pred)
+converted_resort_accom
+ld.result
+
+```
+
+
+
+
+* 위 결과 시각화 , LDA
+```{r}
+#groupmean
+group_means = aggregate(. ~cluster, data = resort_accom_trainData, mean)
+group_means_melt = melt(group_means, id.vars = "cluster")
+
+ggplot(group_means_melt, aes(x = variable, y = cluster, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value,2))) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_minimal() +
+  labs(title = "Group Mean", x = "Variable", y = "cluster", fill = "Coefficient") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#coefficients
+ld.result
+
+coefficients = as.data.frame(ld.result$scaling)
+
+# 계수 데이터 프레임 변환
+coefficients$Variable = rownames(coefficients)
+coefficients_melt = melt(coefficients, id.vars = "Variable")
+
+# 계수 히트맵 생성
+ggplot(coefficients_melt, aes(x = variable, y = Variable, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value,2))) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Coefficient", x = "LD", y = "Variable", fill = "Coefficient")
+
+
+
+#중요도
+
+# 중요도 출력
+importance = ld.result$svd^2 / sum(ld.result$svd^2)
+
+# 중요도 데이터 프레임 생성
+importance_df = data.frame(LD = paste0("LD", 1:length(importance)), Importance = importance)
+
+
+# 중요도 막대 그래프
+ggplot(importance_df, aes(x = LD, y = Importance, fill = LD)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Importance of LDs", x = "", y = "Importance") +
+  geom_text(aes(label = round(importance,2)), vjust = -1) +
+   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) + 
+  coord_cartesian(clip = "off")
+
+#LD1과 LD2를 이용한다.
+
+#이후의 LD1, LD2에 대한 상세 그래프
+
+# LDA 변환
+ld.data = data.frame(ld.pred$x)
+ld.data$cluster = as.factor(resort_accom_testData$cluster)
+
+
+#LD1
+# 바이올린 + 박스 + jitter
+ggplot(ld.data, aes(x = cluster, y = LD1, fill = cluster)) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  geom_boxplot(show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Violin+Box+Jitter Plot for LD1", x = "Cluster", y = "LD1") +   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+#ld2
+ggplot(ld.data, aes(x = cluster, y = LD2, fill = cluster)) +
+  geom_violin(trim = FALSE, show.legend = FALSE) +
+  geom_boxplot(show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "LDA: Violin+Box+Jitter Plot for LD2", x = "Cluster", y = "LD2") +   theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+#점!
+
+ggplot(ld.data, aes(x = LD1, y = LD2, color = cluster)) +
+  geom_point(size = 2) +
+  labs(title = "LDA: 2D Scatter Plot", x = "LD1", y = "LD2") +
+  theme_minimal() +
+  stat_ellipse(level = 0.99) +
+  theme(plot.margin = margin(1, 1, 1, 1, "cm"),
+        plot.title = element_text(size = 20, margin = margin(0, 0, 20, 0), face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 20)),
+        text = element_text(family = "NanumGothic")) +
+ coord_cartesian(clip = "off")
+
+
+
+
+```

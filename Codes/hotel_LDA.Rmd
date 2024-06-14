@@ -1,0 +1,158 @@
+---
+title: "hotel_LDA"
+author: "2229022 Lee Seung Yeon"
+date: "2024-06-01"
+output: word_document
+---
+```{r}
+library(tidyverse)
+library(CCA)
+library(reshape2)
+```
+
+```{r}
+setwd("/Users/seungyeonlee/Desktop/Rworkspace/MV_teamproject")
+df = read.csv("./hotel_bookings.csv")
+
+df = df %>% 
+        filter(rowSums(is.na(df)) == 0) %>% # 결측치 삭제(NA)
+        distinct() %>% # 중복 데이터 삭제 
+        filter(adults != 0) %>% # 어른이 없는 데이터 삭제 
+        select(-agent,-company) %>% # 사용하지 않을 agent, company 삭제
+        mutate(reservation_status_date = as.Date(reservation_status_date)) # reservation_status_date dtype 변환
+
+# 새로운 변수 추가
+df = df %>% 
+  mutate(is_prt = (country == "PRT"),
+         headcount = (adults+children+babies),
+         total_stays_night = stays_in_weekend_nights + stays_in_week_nights,
+         is_childs = (children+babies != 0))
+
+head(df)
+```
+
+# 호텔 별로 LDA
+```{r}
+hotel_df = df %>% select(hotel, adults, children, babies, country, arrival_date_month,
+                            customer_type, is_prt, headcount, 
+                            required_car_parking_spaces, lead_time, total_stays_night, 
+                            previous_cancellations, booking_changes, is_repeated_guest,
+                            market_segment, distribution_channel)
+
+hotel_df = hotel_df %>% mutate(is_childs = (children+babies != 0),
+                                     childs = children+babies,
+                                     is_repeat = as.logical(is_repeated_guest),
+                                     month = as.integer(factor(hotel_df$arrival_date_month), 
+                                                        levels=names(month_mapping),
+                                                        labels=month_mapping)
+                                     )
+
+hotel_df$quater = as.integer(as.factor(ifelse(hotel_df$month <=3, 1,
+                                                 ifelse(hotel_df$month <= 6, 2,
+                                                        ifelse(hotel_df$month <= 9, 3, 4)))))
+
+hotel_df = hotel_df %>% filter(distribution_channel != "Undefined")
+```
+
+```{r}
+(ld1 = lda(hotel ~ headcount+is_prt+childs+lead_time+total_stays_night+booking_changes+is_repeat, data = hotel_df))
+```
+
+
+# 전체 호텔
+
+```{r}
+library(MASS)
+select = dplyr::select
+```
+
+```{r}
+month_mapping = c("January"=1, "February"=2, "March"=2, 
+                  "April"=4, "May"=5, "June"=6, 
+                  "July"=7, "August"=8, "September"=9,
+                  "October"=10, "November"=11, "December"=12)
+```
+
+```{r}
+customer_df = df %>% select(hotel,
+                            adults, children, babies, country, arrival_date_month,
+                            customer_type, is_prt, headcount, 
+                            required_car_parking_spaces, lead_time, total_stays_night, 
+                            previous_cancellations, booking_changes, is_repeated_guest,
+                            market_segment, distribution_channel)
+
+customer_df = customer_df %>% mutate(is_childs = (children+babies != 0),
+                                     childs = children+babies,
+                                     is_repeat = as.logical(is_repeated_guest),
+                                     month = as.integer(factor(customer_df$arrival_date_month), 
+                                                        levels=names(month_mapping),
+                                                        labels=month_mapping)
+                                     )
+customer_df$quater = as.integer(as.factor(ifelse(customer_df$month <=3, 1,
+                                                 ifelse(customer_df$month <= 6, 2,
+                                                        ifelse(customer_df$month <= 9, 3, 4)))))
+
+customer_df = customer_df %>% filter(distribution_channel != "Undefined")
+```
+
+## lda
+```{r}
+(ld1 = lda(customer_type~headcount+is_prt+childs+lead_time+total_stays_night+booking_changes+is_repeat+month+hotel, data=customer_df))
+```
+
+```{r}
+(ld2 = lda(market_segment~headcount+is_prt+childs+lead_time+total_stays_night+booking_changes+is_repeat+month+hotel, data=customer_df))
+```
+
+```{r}
+(ld3 = lda(is_repeat ~ market_segment+headcount+is_prt+childs+lead_time+total_stays_night+hotel, data=customer_df))
+```
+
+```{r}
+(ld4 = lda(month ~ headcount+is_prt+childs+lead_time+total_stays_night+is_repeat+hotel, data=customer_df))
+```
+
+
+# City Hotel
+
+```{r}
+customer_df_city = df %>% filter(hotel=="City Hotel") %>% 
+  select(adults, children, babies, country, arrival_date_month,
+         customer_type, is_prt, headcount, required_car_parking_spaces, 
+         lead_time, total_stays_night, previous_cancellations, booking_changes, 
+         is_repeated_guest, market_segment, distribution_channel)
+
+customer_df_city = customer_df_city %>% mutate(is_childs = (children+babies != 0),
+                                     is_repeat = as.logical(is_repeated_guest),
+                                     month = as.integer(factor(customer_df_city$arrival_date_month), 
+                                                        levels=names(month_mapping),
+                                                        labels=month_mapping)
+                                     )
+customer_df_city$quater = as.integer(as.factor(ifelse(customer_df_city$month <=3, 1,
+                                                 ifelse(customer_df_city$month <= 6, 2,
+                                                        ifelse(customer_df_city$month <= 9, 3, 4)))))
+
+customer_df_city = customer_df_city %>% filter(distribution_channel != "Undefined")
+```
+
+```{r}
+(ld1 = lda(customer_type~headcount+is_prt+is_childs+lead_time+total_stays_night+
+             booking_changes+is_repeat+month, data=customer_df_city))
+```
+
+```{r}
+(ld2 = lda(market_segment~headcount+is_prt+is_childs+lead_time+total_stays_night+
+             booking_changes+is_repeat+month, data=customer_df_city))
+```
+
+```{r}
+(ld3 = lda(is_repeat ~ market_segment+headcount+is_prt+is_childs+lead_time+
+             total_stays_night, data=customer_df_city))
+```
+
+```{r}
+(ld4_city = lda(month ~ headcount+is_prt+is_childs+lead_time+total_stays_night+
+             is_repeat, data=customer_df_city))
+```
+
+
